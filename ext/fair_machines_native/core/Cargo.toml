@@ -7,6 +7,8 @@ license.workspace = true
 description = "Tenant-bounded admission composed with deficit round robin"
 readme = "README.md"
 exclude = ["src/**/tests.rs", "tests/"]
+keywords = ["fair-queuing", "multi-tenant", "drr", "scheduling", "no-std"]
+categories = ["no-std", "algorithms"]
 [dependencies]
 priority-machines.workspace = true
 flow-machines.workspace = true
