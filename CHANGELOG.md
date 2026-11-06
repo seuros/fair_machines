@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/seuros/fair_machines/compare/fair_machines/v0.1.3...fair_machines/v0.1.4) (2026-11-06)
+
+
+### Bug Fixes
+
+* share positive count parsing in tenants ffi ([85f970b](https://github.com/seuros/fair_machines/commit/85f970b7e7002248032c25fc36ad03b1b96ca56c))
+
 ## [0.1.3](https://github.com/seuros/fair_machines/compare/fair_machines/v0.1.2...fair_machines/v0.1.3) (2026-11-06)
 
 
