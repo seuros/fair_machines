@@ -1,0 +1,10 @@
+module FairMachines
+  VERSION: String
+  class TenantFair
+    def self.new: (capacities: Array[Integer], quanta: Array[Integer]) -> instance
+    def admit: (tenant: Integer, cost: Integer) -> bool
+    def cancel: (tenant: Integer, cost: Integer) -> bool
+    def select: (Array[Integer?] heads) -> Integer?
+    def tenant_count: () -> Integer
+  end
+end
