@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/seuros/fair_machines/compare/fair_machines/v0.1.2...fair_machines/v0.1.3) (2026-11-06)
+
+
+### Bug Fixes
+
+* crates.io keywords and categories for the core ([c9e496f](https://github.com/seuros/fair_machines/commit/c9e496fca380c51529e965ce4c8158f5210ed258))
+
 ## [0.1.2](https://github.com/seuros/fair_machines/compare/fair_machines/v0.1.1...fair_machines/v0.1.2) (2026-11-06)
 
 
