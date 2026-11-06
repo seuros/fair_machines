@@ -28,6 +28,14 @@ impl<const N: usize> Tenants for TenantFair<N> {
     }
 }
 
+/// Every element of `values` as a positive `u32`, in order.
+fn positive_counts(ruby: &Ruby, values: RArray) -> Result<Vec<NonZeroU32>, Error> {
+    values
+        .into_iter()
+        .map(|v| positive(ruby, Count::try_convert(v)?))
+        .collect()
+}
+
 #[magnus::wrap(class = "FairMachines::TenantFair", free_immediately, size)]
 struct Wrapper {
     core: RefCell<Box<dyn Tenants>>,
@@ -49,14 +57,8 @@ impl Wrapper {
                 "capacities and quanta lengths must match",
             ));
         }
-        let capacities = capacities
-            .into_iter()
-            .map(|v| positive(ruby, Count::try_convert(v)?))
-            .collect::<Result<Vec<_>, Error>>()?;
-        let quanta = quanta
-            .into_iter()
-            .map(|v| positive(ruby, Count::try_convert(v)?))
-            .collect::<Result<Vec<_>, Error>>()?;
+        let capacities = positive_counts(ruby, capacities)?;
+        let quanta = positive_counts(ruby, quanta)?;
         macro_rules! sized {
             ($($n:literal),*) => {
                 match capacities.len() {
