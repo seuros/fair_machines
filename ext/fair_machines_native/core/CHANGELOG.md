@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/seuros/fair_machines/compare/fair-machines-v0.2.2...fair-machines-v0.3.0) (2026-11-07)
+
+
+### Features
+
+* add KeyedFair hashed-lane budgets ([33d8f62](https://github.com/seuros/fair_machines/commit/33d8f62d6c8f8e8ad8a9bc759dffbdfa8b7a2706))
+
 ## [0.2.2](https://github.com/seuros/fair_machines/compare/fair-machines-v0.2.1...fair-machines-v0.2.2) (2026-11-06)
 
 
