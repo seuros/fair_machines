@@ -7,4 +7,12 @@ module FairMachines
     def select: (Array[Integer?] heads) -> Integer?
     def tenant_count: () -> Integer
   end
+  class KeyedFair
+    def self.new: (lanes: Integer, capacity: Integer) -> instance
+    def admit: (hash: Integer, cost: Integer) -> Integer?
+    def release: (lane: Integer, cost: Integer) -> bool
+    def in_flight: (Integer lane) -> Integer
+    def lane: (Integer hash) -> Integer
+    def lane_count: () -> Integer
+  end
 end

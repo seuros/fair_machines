@@ -4,6 +4,10 @@ use core::num::NonZeroU32;
 use flow_machines::CreditWindow;
 use priority_machines::DeficitRoundRobin;
 
+mod keyed;
+
+pub use keyed::{KeyedFair, Lane};
+
 /// Fixed tenants with independent cost budgets and DRR scheduling.
 #[derive(Debug)]
 pub struct TenantFair<const N: usize> {
@@ -39,10 +43,7 @@ impl<const N: usize> TenantFair<N> {
         });
         let tenant = self.scheduler.select(&eligible)?;
         if let Some(cost) = eligible[tenant] {
-            assert!(self.budgets[tenant].release(cost));
-            if self.budgets[tenant].in_flight() == 0 {
-                assert!(self.scheduler.deactivate(tenant));
-            }
+            assert!(self.release(tenant, cost));
         }
         Some(tenant)
     }
@@ -53,6 +54,11 @@ impl<const N: usize> TenantFair<N> {
     /// Panics if an internal lane-index invariant is violated.
     #[must_use]
     pub fn cancel(&mut self, tenant: usize, cost: NonZeroU32) -> bool {
+        self.release(tenant, cost)
+    }
+
+    /// Return queued cost; a drained tenant leaves the DRR rotation.
+    fn release(&mut self, tenant: usize, cost: NonZeroU32) -> bool {
         let Some(budget) = self.budgets.get_mut(tenant) else {
             return false;
         };

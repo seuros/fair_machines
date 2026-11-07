@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used)]
 use super::*;
-fn nz(x: u32) -> NonZeroU32 {
+pub fn nz(x: u32) -> NonZeroU32 {
     NonZeroU32::new(x).expect("positive")
 }
 

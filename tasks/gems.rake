@@ -14,7 +14,5 @@ namespace :gems do
   end
 
   desc 'Alias for gems:push_all'
-  task :push, [:tag] do |_task, args|
-    FairMachinesRelease.run { FairMachinesRelease.push_all(args[:tag]) }
-  end
+  task :push, [:tag] => :push_all
 end

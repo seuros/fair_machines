@@ -13,5 +13,9 @@ Adapters own queues, present truthful head costs, and serialize admission,
 selection, and cancellation. Aggregate credits do not identify individual jobs.
 `cancel` returns admitted cost; when a tenant drains its DRR visit is reset.
 Fairness assumes continuously backlogged tenants and meaningful cost estimates.
+`KeyedFair<LANES>` covers an open tenant set: caller-hashed keys map onto fixed
+lanes with independent credit budgets and no scheduler. Keys sharing a lane share
+its budget.
+
 Tenant hierarchies, per-flow WFQ, runtime preemption, and strict latency/starvation
 bounds are not implemented.

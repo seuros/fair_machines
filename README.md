@@ -175,6 +175,20 @@ fair.select([4, nil])             # => nil    the queue is empty, and so is the 
 
 Cancelling more than was admitted is refused, and the ledger is untouched.
 
+### Too many tenants to name: `KeyedFair`
+
+Sixteen tenant slots is a crew roster. Orgs, API keys and IP prefixes are a starfield. `KeyedFair` hashes each key onto a fixed set of lanes, every lane with its own budget and no queue. A loud org fills its lane and gets `nil`; the other lanes don't notice. Keys that hash to the same lane share its budget, so pick enough lanes that a collision is rare.
+
+```ruby
+fair = FairMachines::KeyedFair.new(lanes: 64, capacity: 8)
+
+lane = fair.admit(hash: org_id.hash, cost: 1)   # => 17, or nil when that lane is full
+# ... do the work ...
+fair.release(lane:, cost: 1)                    # => true
+```
+
+`lanes:` is a power of two from 1 to 256. Any Integer works as `hash:`, negatives included, so `key.hash` goes straight in.
+
 ## The Rules of the Escort
 
 - **1 to 16 tenants**, set by the length of `capacities:`. `quanta:` must be the same length. Empty, longer, or mismatched arrays raise `ArgumentError`.

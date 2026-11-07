@@ -1,13 +1,8 @@
 //! Exact const-generic tenant counts erased only for the host binding.
 
-use crate::{Count, positive};
+use crate::{Count, Positive, arg_error, convert_all, kwargs};
 use fair_machines::TenantFair;
-use magnus::{
-    Error, RArray, RHash, RModule, Ruby, Value, function, method,
-    prelude::*,
-    scan_args::{get_kwargs, scan_args},
-    typed_data::Obj,
-};
+use magnus::{Error, RArray, RModule, Ruby, Value, function, method, prelude::*, typed_data::Obj};
 use std::{cell::RefCell, num::NonZeroU32};
 
 trait Tenants: Send {
@@ -28,14 +23,6 @@ impl<const N: usize> Tenants for TenantFair<N> {
     }
 }
 
-/// Every element of `values` as a positive `u32`, in order.
-fn positive_counts(ruby: &Ruby, values: RArray) -> Result<Vec<NonZeroU32>, Error> {
-    values
-        .into_iter()
-        .map(|v| positive(ruby, Count::try_convert(v)?))
-        .collect()
-}
-
 #[magnus::wrap(class = "FairMachines::TenantFair", free_immediately, size)]
 struct Wrapper {
     core: RefCell<Box<dyn Tenants>>,
@@ -44,31 +31,19 @@ struct Wrapper {
 
 impl Wrapper {
     fn new(ruby: &Ruby, args: &[Value]) -> Result<Self, Error> {
-        let args = scan_args::<(), (), (), (), RHash, ()>(args)?;
-        let (capacities, quanta) = get_kwargs::<_, (RArray, RArray), (), ()>(
-            args.keywords,
-            &["capacities", "quanta"],
-            &[],
-        )?
-        .required;
+        let (capacities, quanta): (RArray, RArray) = kwargs(args, &["capacities", "quanta"])?;
         if capacities.len() != quanta.len() {
-            return Err(Error::new(
-                ruby.exception_arg_error(),
-                "capacities and quanta lengths must match",
-            ));
+            return Err(arg_error(ruby, "capacities and quanta lengths must match"));
         }
-        let capacities = positive_counts(ruby, capacities)?;
-        let quanta = positive_counts(ruby, quanta)?;
+        let capacities = convert_all::<Positive>(capacities)?;
+        let quanta = convert_all::<Positive>(quanta)?;
         macro_rules! sized {
             ($($n:literal),*) => {
                 match capacities.len() {
                     $($n => Box::new(TenantFair::<$n>::new(
-                        std::array::from_fn(|i| capacities[i]),
-                        std::array::from_fn(|i| quanta[i]))) as Box<dyn Tenants>,)*
-                    _ => {
-                        let message = "tenant count must be 1..16";
-                        return Err(Error::new(ruby.exception_arg_error(), message));
-                    }
+                        std::array::from_fn(|i| capacities[i].0),
+                        std::array::from_fn(|i| quanta[i].0))) as Box<dyn Tenants>,)*
+                    _ => return Err(arg_error(ruby, "tenant count must be 1..16")),
                 }
             };
         }
@@ -79,48 +54,37 @@ impl Wrapper {
         })
     }
 
-    fn cost(ruby: &Ruby, args: &[Value]) -> Result<(usize, NonZeroU32), Error> {
-        let args = scan_args::<(), (), (), (), RHash, ()>(args)?;
-        let (tenant, cost) =
-            get_kwargs::<_, (Count, Count), (), ()>(args.keywords, &["tenant", "cost"], &[])?
-                .required;
-        Ok((tenant.0 as usize, positive(ruby, cost)?))
+    /// Parse `tenant:`/`cost:` and apply `op` to the unfrozen core.
+    fn with_cost(
+        rb_self: Obj<Self>,
+        args: &[Value],
+        op: fn(&mut dyn Tenants, usize, NonZeroU32) -> bool,
+    ) -> Result<bool, Error> {
+        rb_self.check_frozen()?;
+        let (Count(tenant), Positive(cost)) = kwargs(args, &["tenant", "cost"])?;
+        Ok(op(&mut **rb_self.core.borrow_mut(), tenant as usize, cost))
     }
 
-    fn admit(ruby: &Ruby, rb_self: Obj<Self>, args: &[Value]) -> Result<bool, Error> {
-        rb_self.check_frozen()?;
-        let (tenant, cost) = Self::cost(ruby, args)?;
-        let admitted = rb_self.core.borrow_mut().admit(tenant, cost);
-        Ok(admitted)
+    fn admit(rb_self: Obj<Self>, args: &[Value]) -> Result<bool, Error> {
+        Self::with_cost(rb_self, args, |core, tenant, cost| core.admit(tenant, cost))
     }
 
-    fn cancel(ruby: &Ruby, rb_self: Obj<Self>, args: &[Value]) -> Result<bool, Error> {
-        rb_self.check_frozen()?;
-        let (tenant, cost) = Self::cost(ruby, args)?;
-        let canceled = rb_self.core.borrow_mut().cancel(tenant, cost);
-        Ok(canceled)
+    fn cancel(rb_self: Obj<Self>, args: &[Value]) -> Result<bool, Error> {
+        Self::with_cost(rb_self, args, |core, tenant, cost| {
+            core.cancel(tenant, cost)
+        })
     }
 
     fn select(ruby: &Ruby, rb_self: Obj<Self>, heads: RArray) -> Result<Option<usize>, Error> {
         rb_self.check_frozen()?;
         if heads.len() != rb_self.count {
-            return Err(Error::new(
-                ruby.exception_arg_error(),
-                "heads length must match tenant count",
-            ));
+            return Err(arg_error(ruby, "heads length must match tenant count"));
         }
-        let heads = heads
+        let heads: Vec<_> = convert_all::<Option<Positive>>(heads)?
             .into_iter()
-            .map(|v| {
-                if v.is_nil() {
-                    Ok(None)
-                } else {
-                    positive(ruby, Count::try_convert(v)?).map(Some)
-                }
-            })
-            .collect::<Result<Vec<_>, Error>>()?;
-        let selected = rb_self.core.borrow_mut().select(&heads);
-        Ok(selected)
+            .map(|head| head.map(|Positive(cost)| cost))
+            .collect();
+        Ok(rb_self.core.borrow_mut().select(&heads))
     }
 
     const fn tenant_count(&self) -> usize {
