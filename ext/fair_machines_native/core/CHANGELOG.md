@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0](https://github.com/seuros/fair_machines/compare/fair-machines-v0.3.0...fair-machines-v0.4.0) (2026-11-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* converted to the fleet conventions. One exhaustive Refusal per crate, Result from every operation that can refuse, a refusal changes nothing, provable idempotent repeats are honoured, Ruby mirrors the core. No compatibility aliases. Requires flow-machines >= 0.3 and priority-machines >= 0.4.
+
+### Features
+
+* answer Result&lt;_, Refusal&gt;, refuse unadmitted heads in select, mirror the core positionally in Ruby ([5e73ef6](https://github.com/seuros/fair_machines/commit/5e73ef67f86a0326709e27eca46d8f97bccd8aba))
+
 ## [0.3.0](https://github.com/seuros/fair_machines/compare/fair-machines-v0.2.2...fair-machines-v0.3.0) (2026-11-07)
 
 
