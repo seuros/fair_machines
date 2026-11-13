@@ -4,10 +4,8 @@ mod init;
 mod keyed;
 mod tenants;
 
-use magnus::{
-    Error, Integer, RArray, RHash, Ruby, TryConvert, Value,
-    scan_args::{get_kwargs, scan_args},
-};
+use fair_machines::Refusal;
+use magnus::{Error, Integer, RArray, Ruby, TryConvert, Value, prelude::*};
 use std::num::NonZeroU32;
 
 pub(crate) fn arg_error(ruby: &Ruby, message: &'static str) -> Error {
@@ -24,13 +22,23 @@ pub(crate) fn integer(value: Value) -> Result<Integer, Error> {
     })
 }
 
-/// Exactly the two required keywords `keys`, converted in order.
-pub(crate) fn kwargs<A: TryConvert, B: TryConvert>(
-    args: &[Value],
-    keys: &[&str; 2],
-) -> Result<(A, B), Error> {
-    let args = scan_args::<(), (), (), (), RHash, ()>(args)?;
-    Ok(get_kwargs::<_, (A, B), (), ()>(args.keywords, keys, &[])?.required)
+/// Ruby symbol of a refusal: the snake case of the core variant.
+pub(crate) fn refusal(ruby: &Ruby, refused: Refusal) -> Value {
+    ruby.to_symbol(match refused {
+        Refusal::UnknownTenant => "unknown_tenant",
+        Refusal::UnknownLane => "unknown_lane",
+        Refusal::Insufficient => "insufficient",
+        Refusal::ExceedsInFlight => "exceeds_in_flight",
+    })
+    .as_value()
+}
+
+/// The symbol `honoured` for `Ok(())`, the refusal's symbol otherwise.
+pub(crate) fn done(ruby: &Ruby, answer: Result<(), Refusal>, honoured: &str) -> Value {
+    match answer {
+        Ok(()) => ruby.to_symbol(honoured).as_value(),
+        Err(refused) => refusal(ruby, refused),
+    }
 }
 
 /// Every element of `values`, converted in order.
@@ -38,25 +46,31 @@ pub(crate) fn convert_all<T: TryConvert>(values: RArray) -> Result<Vec<T>, Error
     values.into_iter().map(T::try_convert).collect()
 }
 
-/// A `u32` Integer.
+/// A tenant or lane position: an Integer in `0..2**64`. One the platform
+/// cannot index names nothing, like any other index past the end.
 #[derive(Clone, Copy)]
-pub(crate) struct Count(pub(crate) u32);
+pub(crate) struct Index(pub(crate) usize);
 
-impl TryConvert for Count {
+impl TryConvert for Index {
     fn try_convert(value: Value) -> Result<Self, Error> {
-        integer(value)?.to_u32().map(Self)
+        let index = integer(value)?.to_u64()?;
+        Ok(Self(usize::try_from(index).unwrap_or(usize::MAX)))
     }
 }
 
-/// A positive `u32` Integer.
+/// A capacity, quantum or cost: an Integer in `1..2**32`.
 #[derive(Clone, Copy)]
 pub(crate) struct Positive(pub(crate) NonZeroU32);
 
 impl TryConvert for Positive {
     fn try_convert(value: Value) -> Result<Self, Error> {
-        let Count(count) = Count::try_convert(value)?;
-        NonZeroU32::new(count)
+        NonZeroU32::new(integer(value)?.to_u32()?)
             .map(Self)
-            .ok_or_else(|| arg_error(&Ruby::get_with(value), "expected a positive u32"))
+            .ok_or_else(|| {
+                Error::new(
+                    Ruby::get_with(value).exception_range_error(),
+                    "expected a positive Integer",
+                )
+            })
     }
 }

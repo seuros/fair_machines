@@ -2,14 +2,16 @@
 #![doc = include_str!("../README.md")]
 use core::num::NonZeroU32;
 use flow_machines::CreditWindow;
-use priority_machines::DeficitRoundRobin;
+use priority_machines::{Deactivation, DeficitRoundRobin};
 
 mod keyed;
+mod refusal;
 
 pub use keyed::{KeyedFair, Lane};
+pub use refusal::Refusal;
 
 /// Fixed tenants with independent cost budgets and DRR scheduling.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TenantFair<const N: usize> {
     budgets: [CreditWindow; N],
     scheduler: DeficitRoundRobin<N>,
@@ -26,49 +28,100 @@ impl<const N: usize> TenantFair<N> {
     }
 
     /// Admit cost without borrowing another tenant's capacity.
-    #[must_use]
-    pub fn admit(&mut self, tenant: usize, cost: NonZeroU32) -> bool {
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::UnknownTenant`] for an index of `N` or more,
+    /// [`Refusal::Insufficient`] when `cost` exceeds the tenant's available
+    /// budget: there is no partial admission. Nothing changed.
+    pub fn admit(&mut self, tenant: usize, cost: NonZeroU32) -> Result<(), Refusal> {
         self.budgets
             .get_mut(tenant)
-            .is_some_and(|budget| budget.try_acquire(cost))
+            .ok_or(Refusal::UnknownTenant)?
+            .try_acquire(cost)
+            .map_err(Refusal::from_flow)
     }
 
-    /// Dispatch one admitted head and return its queued-cost credit.
+    /// Dispatch one admitted head and return its cost to the tenant's budget.
     ///
-    /// # Panics
-    /// Panics if an internal scheduling/accounting invariant is violated.
-    pub fn select(&mut self, heads: &[Option<NonZeroU32>; N]) -> Option<usize> {
-        let eligible = core::array::from_fn(|i| {
-            heads[i].filter(|cost| cost.get() <= self.budgets[i].in_flight())
-        });
-        let tenant = self.scheduler.select(&eligible)?;
-        if let Some(cost) = eligible[tenant] {
-            assert!(self.release(tenant, cost));
+    /// `heads[i]` is the cost at the head of tenant `i`'s queue, `None` when
+    /// it has nothing waiting. A drain: `Ok(None)` is the honoured answer
+    /// "every head is `None`", returned exactly then. Like every selection it
+    /// records what the round observed: a tenant presented as `None` loses
+    /// the credit it had saved.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::ExceedsInFlight`] when any head costs more than its tenant
+    /// has admitted. Such a head was never admitted, so it cannot be
+    /// dispatched, and the call is refused whole rather than quietly treating
+    /// that tenant as empty. Nothing changed: no credit was paid, no head
+    /// charged, no budget touched.
+    pub fn select(&mut self, heads: &[Option<NonZeroU32>; N]) -> Result<Option<usize>, Refusal> {
+        let admitted = |(budget, head): (&CreditWindow, &Option<NonZeroU32>)| {
+            head.is_none_or(|cost| cost.get() <= budget.in_flight())
+        };
+        if !self.budgets.iter().zip(heads).all(admitted) {
+            return Err(Refusal::ExceedsInFlight);
         }
-        Some(tenant)
+        let Some(tenant) = self.scheduler.select(heads) else {
+            return Ok(None);
+        };
+        // The scheduler only selects a lane with a head, and every head was
+        // checked against its budget above, so this return is never refused.
+        if let Some(cost) = heads[tenant] {
+            self.release(tenant, cost)?;
+        }
+        Ok(Some(tenant))
     }
 
-    /// Cancel queued cost; invalid/over-release requests leave state unchanged.
+    /// Cancel queued cost: work that left the queue without being selected.
     ///
-    /// # Panics
-    /// Panics if an internal lane-index invariant is violated.
-    #[must_use]
-    pub fn cancel(&mut self, tenant: usize, cost: NonZeroU32) -> bool {
+    /// Budgets count cost, not jobs, so a repeated `cancel` cannot be
+    /// recognised as a repeat. It is honoured while the tenant has that much
+    /// cost admitted and refused once it does not.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::UnknownTenant`] for an index of `N` or more,
+    /// [`Refusal::ExceedsInFlight`] when `cost` exceeds what the tenant has
+    /// admitted: there is no partial return. Nothing changed.
+    pub fn cancel(&mut self, tenant: usize, cost: NonZeroU32) -> Result<(), Refusal> {
         self.release(tenant, cost)
     }
 
+    /// Number of tenants, `N`.
+    #[must_use]
+    pub const fn tenant_count(&self) -> usize {
+        N
+    }
+
+    /// Cost the tenant has admitted and not yet dispatched or cancelled;
+    /// `None` for an index of `N` or more.
+    #[must_use]
+    pub fn in_flight(&self, tenant: usize) -> Option<u32> {
+        self.budgets.get(tenant).map(CreditWindow::in_flight)
+    }
+
+    /// Cost the tenant may still admit; `None` for an index of `N` or more.
+    #[must_use]
+    pub fn available(&self, tenant: usize) -> Option<u32> {
+        self.budgets.get(tenant).map(CreditWindow::available)
+    }
+
     /// Return queued cost; a drained tenant leaves the DRR rotation.
-    fn release(&mut self, tenant: usize, cost: NonZeroU32) -> bool {
-        let Some(budget) = self.budgets.get_mut(tenant) else {
-            return false;
-        };
-        if !budget.release(cost) {
-            return false;
+    fn release(&mut self, tenant: usize, cost: NonZeroU32) -> Result<(), Refusal> {
+        let budget = self.budgets.get_mut(tenant).ok_or(Refusal::UnknownTenant)?;
+        budget.release(cost).map_err(Refusal::from_flow)?;
+        if budget.in_flight() > 0 {
+            return Ok(());
         }
-        if budget.in_flight() == 0 {
-            assert!(self.scheduler.deactivate(tenant));
+        // `tenant` indexed `budgets`, and the scheduler has the same `N`
+        // lanes, so this is never refused.
+        match self.scheduler.deactivate(tenant) {
+            Ok(Deactivation::Deactivated | Deactivation::Idle) => Ok(()),
+            Err(refusal) => Err(Refusal::from_priority(refusal)),
         }
-        true
     }
 }
 

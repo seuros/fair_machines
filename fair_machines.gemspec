@@ -8,8 +8,8 @@ Gem::Specification.new do |spec|
   spec.authors = ['Abdelkader Boudih']
   spec.email = ['oss@seuros.com']
   spec.summary = 'Native per-tenant admission budgets and deficit fairness'
-  spec.description = 'Initial unstable Ruby adapter to the no_std fair-machines Rust core. ' \
-                     'Local source builds require unpublished path-only flow and priority siblings.'
+  spec.description = 'Ruby adapter to the no_std fair-machines Rust core: per-tenant cost budgets with ' \
+                     'deficit round robin dispatch, and hashed lanes for an open tenant set.'
   spec.homepage = 'https://github.com/seuros/fair_machines'
   spec.license = 'MIT'
   spec.required_ruby_version = '>= 4.0.0'

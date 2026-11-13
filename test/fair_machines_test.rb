@@ -4,80 +4,125 @@ require 'minitest/autorun'
 require 'fair_machines'
 
 class FairMachinesTest < Minitest::Test
-  def scheduler
-    FairMachines::TenantFair.new(capacities: [20, 20], quanta: [3, 1])
-  end
+  TenantFair = FairMachines::TenantFair
+
+  def scheduler = TenantFair.new([20, 20], [3, 1])
+
+  def snapshot(fair) = Array.new(fair.tenant_count) { |tenant| [fair.in_flight(tenant), fair.available(tenant)] }
 
   def test_budgets_and_fair_cost_reference
     fair = scheduler
-    assert fair.admit(tenant: 0, cost: 20)
-    assert fair.admit(tenant: 1, cost: 20)
-    refute fair.admit(tenant: 0, cost: 1)
+    assert_equal :admitted, fair.admit(0, 20)
+    assert_equal :admitted, fair.admit(1, 20)
+    assert_equal :insufficient, fair.admit(0, 1)
     assert_equal [0, 0, 0, 1] * 5, Array.new(20) { fair.select([1, 1]) }
-    assert fair.admit(tenant: 0, cost: 15)
-    refute fair.admit(tenant: 0, cost: 1)
-    assert fair.cancel(tenant: 1, cost: 15)
-    refute fair.cancel(tenant: 1, cost: 1)
+    assert_equal [[5, 15], [15, 5]], snapshot(fair)
+    assert_equal :admitted, fair.admit(0, 15)
+    assert_equal :insufficient, fair.admit(0, 1)
+    assert_equal :cancelled, fair.cancel(1, 15)
+    assert_equal :exceeds_in_flight, fair.cancel(1, 1)
   end
 
   def test_exact_tenant_counts
-    (1..16).each do |n|
-      fair = FairMachines::TenantFair.new(capacities: [1] * n, quanta: [1] * n)
+    assert_equal 16, TenantFair::MAX_TENANTS
+    (1..TenantFair::MAX_TENANTS).each do |n|
+      fair = TenantFair.new([1] * n, [1] * n)
       assert_equal n, fair.tenant_count
-      n.times { |tenant| assert fair.admit(tenant:, cost: 1) }
-      assert_equal (0...n).to_a, Array.new(n) { fair.select([1] * n) }
-      assert_nil fair.select([1] * n)
+      n.times { |tenant| assert_equal :admitted, fair.admit(tenant, 1) }
+      assert_equal (0...n).to_a, Array.new(n) { |turn| fair.select([nil] * turn + [1] * (n - turn)) }
+      assert_nil fair.select([nil] * n)
     end
   end
 
-  def test_invalid_or_unadmitted_heads_and_cancel
+  def test_select_is_nil_only_when_every_head_is_nil
     fair = scheduler
-    assert_nil fair.select([1, 1])
-    assert fair.admit(tenant: 1, cost: 1)
-    assert_equal 1, fair.select([20, 1])
-    refute fair.admit(tenant: 2, cost: 1)
-    refute fair.cancel(tenant: 2, cost: 1)
+    assert_nil fair.select([nil, nil])
+    assert_equal :admitted, fair.admit(1, 1)
+    assert_nil fair.select([nil, nil])
+    assert_equal 1, fair.select([nil, 1])
     assert_nil fair.select([nil, nil])
   end
 
-  def test_atomic_validation
+  def test_an_unadmitted_head_refuses_the_whole_selection
     fair = scheduler
-    fair.admit(tenant: 0, cost: 3)
-    fair.admit(tenant: 1, cost: 1)
+    assert_equal :exceeds_in_flight, fair.select([1, 1])
+    assert_equal :admitted, fair.admit(1, 1)
+    before = snapshot(fair)
+    assert_equal :exceeds_in_flight, fair.select([20, 1])
+    assert_equal :exceeds_in_flight, fair.select([nil, 2])
+    assert_equal before, snapshot(fair)
+    assert_equal 1, fair.select([nil, 1])
+  end
+
+  def test_refusals_are_symbols_and_change_nothing
+    fair = scheduler
+    fair.admit(0, 3)
+    fair.admit(1, 1)
+    before = snapshot(fair)
+    assert_equal :unknown_tenant, fair.admit(2, 1)
+    assert_equal :unknown_tenant, fair.admit(2**64 - 1, 1)
+    assert_equal :unknown_tenant, fair.cancel(2, 1)
+    assert_equal :insufficient, fair.admit(0, 18)
+    assert_equal :exceeds_in_flight, fair.cancel(1, 2)
+    assert_equal :exceeds_in_flight, fair.select([4, 1])
+    assert_equal before, snapshot(fair)
+    assert_nil fair.in_flight(2)
+    assert_nil fair.available(2)
+    # The rotation was not disturbed either.
+    assert_equal [0, 0, 0, 1], [[1, 1], [1, 1], [1, 1], [nil, 1]].map { |heads| fair.select(heads) }
+  end
+
+  def test_malformed_input_raises_before_anything_changes
+    fair = scheduler
+    fair.admit(0, 3)
+    fair.admit(1, 1)
     assert_raises(TypeError) { fair.select([1, 1.5]) }
-    assert_raises(ArgumentError) { fair.select([1, 0]) }
+    assert_raises(RangeError) { fair.select([1, 0]) }
     assert_raises(ArgumentError) { fair.select([1]) }
-    assert_raises(TypeError) { fair.cancel(tenant: 0, cost: 1.2) }
-    assert_equal [0, 0, 0, 1], Array.new(4) { fair.select([1, 1]) }
+    assert_raises(TypeError) { fair.select(1) }
+    assert_raises(TypeError) { fair.cancel(0, 1.2) }
+    assert_raises(TypeError) { fair.admit('0', 1) }
+    assert_raises(ArgumentError) { fair.admit(0) }
+    assert_raises(ArgumentError) { fair.admit(tenant: 0, cost: 1) }
+    assert_equal [[3, 17], [1, 19]], snapshot(fair)
+    assert_equal [0, 0, 0, 1], [[1, 1], [1, 1], [1, 1], [nil, 1]].map { |heads| fair.select(heads) }
   end
 
   def test_strict_boundary
-    [[], [1] * 17, [0]].each do |capacities|
-      assert_raises(ArgumentError) { FairMachines::TenantFair.new(capacities:, quanta: [1] * capacities.size) }
+    [[], [1] * 17].each do |capacities|
+      assert_raises(ArgumentError) { TenantFair.new(capacities, [1] * capacities.size) }
     end
-    assert_raises(ArgumentError) { FairMachines::TenantFair.new(capacities: [1], quanta: [1, 1]) }
-    [1.5, '1', Object.new].each do |v|
-      assert_raises(TypeError) { FairMachines::TenantFair.new(capacities: [v], quanta: [1]) }
+    assert_raises(ArgumentError) { TenantFair.new([1], [1, 1]) }
+    assert_raises(ArgumentError) { TenantFair.new([1]) }
+    assert_raises(TypeError) { TenantFair.new(1, [1]) }
+    assert_raises(TypeError) { TenantFair.allocate }
+    assert_raises(RangeError) { TenantFair.new([0], [1]) }
+    assert_raises(RangeError) { TenantFair.new([1], [0]) }
+    [1.5, '1', Object.new, nil].each do |v|
+      assert_raises(TypeError) { TenantFair.new([v], [1]) }
     end
-    [-1, 2**32].each do |v|
-      assert_raises(RangeError) { scheduler.admit(tenant: 0, cost: v) }
-      assert_raises(RangeError) { scheduler.cancel(tenant: v, cost: 1) }
+    [-1, 0, 2**32].each do |v|
+      assert_raises(RangeError) { scheduler.admit(0, v) }
+      assert_raises(RangeError) { scheduler.cancel(0, v) }
     end
-    assert_raises(ArgumentError) { scheduler.admit(tenant: 0, cost: 0) }
-    assert_raises(ArgumentError) { scheduler.admit(tenant: 0, cost: 1, extra: 2) }
+    [-1, 2**64].each do |v|
+      assert_raises(RangeError) { scheduler.admit(v, 1) }
+      assert_raises(RangeError) { scheduler.in_flight(v) }
+    end
   end
 
   def test_freeze_gc_and_independent_state
     fair = scheduler
-    fair.admit(tenant: 0, cost: 1)
+    fair.admit(0, 1)
     GC.start
     GC.compact
     assert_equal 0, fair.select([1, nil])
-    assert_nil scheduler.select([1, nil])
+    assert_equal :exceeds_in_flight, scheduler.select([1, nil])
     fair.freeze
-    assert_raises(FrozenError) { fair.admit(tenant: 0, cost: 1) }
-    assert_raises(FrozenError) { fair.cancel(tenant: 0, cost: 1) }
+    assert_raises(FrozenError) { fair.admit(0, 1) }
+    assert_raises(FrozenError) { fair.cancel(0, 1) }
     assert_raises(FrozenError) { fair.select([nil, nil]) }
     assert_equal 2, fair.tenant_count
+    assert_equal [[0, 20], [0, 20]], snapshot(fair)
   end
 end

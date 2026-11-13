@@ -12,11 +12,11 @@ gem 'fair_machines'
 
 ```ruby
 # Two tenants. Each may have 100 units of work queued; each gets 2 units per round.
-fair = FairMachines::TenantFair.new(capacities: [100, 100], quanta: [2, 2])
+fair = FairMachines::TenantFair.new([100, 100], [2, 2])   # capacities, quanta
 
 # Enterprise tenant enqueues ten PDF exports at cost 5. Small tenant queues five emails at cost 1.
-10.times { fair.admit(tenant: 0, cost: 5) }
-5.times  { fair.admit(tenant: 1, cost: 1) }
+10.times { fair.admit(0, 5) }   # => :admitted   (tenant, cost)
+5.times  { fair.admit(1, 1) }
 
 # Each round, tell the scheduler the cost at the head of every tenant's queue.
 # It answers with the tenant whose head runs now. You pop that job and run it.
@@ -58,7 +58,7 @@ end
 
 ## The Flight Plan
 
-Each tenant is either idle or has cost queued. Admission moves cost in, dispatch and cancellation move it out, and a full budget turns new work away.
+Each tenant is either idle or has cost queued. Admission moves cost in, dispatch and cancellation move it out, and a full budget turns new work away. A refusal moves nothing.
 
 ```mermaid
 stateDiagram-v2
@@ -82,9 +82,9 @@ sequenceDiagram
     participant W as Workers
 
     E->>F: admit cost 5, ten times
-    F-->>E: true, true, true...
+    F-->>E: :admitted, :admitted...
     S->>F: admit cost 1
-    F-->>S: true
+    F-->>S: :admitted
 
     W->>F: select([5, 1])
     F-->>W: tenant 1
@@ -104,44 +104,54 @@ sequenceDiagram
 
 ### Admit
 
-Before a job is enqueued, ask whether the tenant has room for its cost. The answer is a plain boolean, and `false` means the job doesn't go on the queue.
+Before a job is enqueued, ask whether the tenant has room for its cost. `:admitted` means it does and the cost is now on the ledger. Anything else is a refusal, and the job doesn't go on the queue.
 
 ```ruby
-fair = FairMachines::TenantFair.new(capacities: [10, 5], quanta: [3, 1])
+fair = FairMachines::TenantFair.new([10, 5], [3, 1])
 
-fair.admit(tenant: 1, cost: 5)   # => true   budget 5, now full
-fair.admit(tenant: 1, cost: 1)   # => false  over budget
-fair.admit(tenant: 2, cost: 1)   # => false  no such tenant
-fair.tenant_count                # => 2
+fair.admit(1, 5)     # => :admitted        budget 5, now full
+fair.admit(1, 1)     # => :insufficient    over budget
+fair.admit(2, 1)     # => :unknown_tenant  no such tenant
+fair.in_flight(1)    # => 5
+fair.available(1)    # => 0
+fair.tenant_count    # => 2
 ```
 
-Over-budget is a refusal, not an error. Decide what to do with the job: reject it, hold it, tell the tenant.
+Over-budget is a refusal, not an error. Decide what to do with the job: reject it, hold it, tell the tenant. Every answer is a symbol and every symbol is truthy, so don't write `if fair.admit(...)`. Compare against `:admitted`.
 
 ### Select
 
 Each round, pass the head cost of every tenant's queue. You get back the tenant whose head runs now, or `nil` when nobody is eligible. The chosen tenant is charged that cost against its budget, so the room comes back as the work drains.
 
 ```ruby
-fair = FairMachines::TenantFair.new(capacities: [10, 5], quanta: [3, 1])
-fair.admit(tenant: 0, cost: 4)
-fair.admit(tenant: 1, cost: 1)
+fair = FairMachines::TenantFair.new([10, 5], [3, 1])
+fair.admit(0, 4)
+fair.admit(1, 1)
 
-fair.select([4, 1])     # => 1
-fair.select([4, nil])   # => 0
-fair.select([4, nil])   # => nil   tenant 0 has nothing left queued
-fair.admit(tenant: 0, cost: 7)   # => true   the dispatched 4 freed its room
+fair.select([4, 1])       # => 1
+fair.select([4, nil])     # => 0
+fair.select([nil, nil])   # => nil   both queues are empty
+fair.admit(0, 7)          # => :admitted   the dispatched 4 freed its room
 ```
 
-Heads have to be truthful. A head that costs more than the tenant has admitted is not eligible and `select` returns `nil` for it.
+`nil` means one thing: every head you passed was `nil`.
+
+Heads have to be truthful. A head that costs more than its tenant has admitted was never admitted, so it can't be dispatched. `select` refuses the whole round with `:exceeds_in_flight` and changes nothing, rather than quietly skipping that tenant and leaving you to wonder why its jobs never run.
+
+```ruby
+fair.select([8, nil])     # => :exceeds_in_flight   tenant 0 only admitted 7
+fair.select([7, 1])       # => :exceeds_in_flight   tenant 1 admitted nothing
+fair.select([7, nil])     # => 0
+```
 
 ### Share is by cost, not by count
 
 Quanta are how much cost each tenant may dispatch per round, with leftover carried to the next round. A tenant whose head is expensive waits until it has saved up. A tenant with cheap jobs runs one every round.
 
 ```ruby
-fair = FairMachines::TenantFair.new(capacities: [50, 50], quanta: [2, 2])
-fair.admit(tenant: 0, cost: 40)   # heavy jobs at cost 4
-fair.admit(tenant: 1, cost: 10)   # light jobs at cost 1
+fair = FairMachines::TenantFair.new([50, 50], [2, 2])
+fair.admit(0, 40)   # heavy jobs at cost 4
+fair.admit(1, 10)   # light jobs at cost 1
 
 Array.new(10) { fair.select([4, 1]) }
 # => [1, 1, 0, 1, 1, 1, 1, 0, 1, 1]
@@ -152,9 +162,9 @@ Same quanta, same share of the pool, and the light tenant still dispatches four 
 Give one tenant a bigger quantum and it gets a bigger share of the pool outright:
 
 ```ruby
-fair = FairMachines::TenantFair.new(capacities: [20, 20], quanta: [3, 1])
-fair.admit(tenant: 0, cost: 20)
-fair.admit(tenant: 1, cost: 20)
+fair = FairMachines::TenantFair.new([20, 20], [3, 1])
+fair.admit(0, 20)
+fair.admit(1, 20)
 
 Array.new(8) { fair.select([1, 1]) }
 # => [0, 0, 0, 1, 0, 0, 0, 1]
@@ -165,38 +175,69 @@ Array.new(8) { fair.select([1, 1]) }
 A job that leaves the queue without being dispatched has to give its cost back, or the tenant's budget leaks until nothing is admitted.
 
 ```ruby
-fair = FairMachines::TenantFair.new(capacities: [10, 5], quanta: [3, 1])
-fair.admit(tenant: 0, cost: 4)
+fair = FairMachines::TenantFair.new([10, 5], [3, 1])
+fair.admit(0, 4)
 
-fair.cancel(tenant: 0, cost: 4)   # => true
-fair.cancel(tenant: 0, cost: 1)   # => false  nothing left to cancel
-fair.select([4, nil])             # => nil    the queue is empty, and so is the ledger
+fair.cancel(0, 4)         # => :cancelled
+fair.cancel(0, 1)         # => :exceeds_in_flight  nothing left to cancel
+fair.select([nil, nil])   # => nil                 the queue is empty, and so is the ledger
 ```
 
-Cancelling more than was admitted is refused, and the ledger is untouched.
+Cancelling more than was admitted is refused, and the ledger is untouched. The ledger counts cost, not jobs: it can't tell a cancel you sent twice from two jobs of the same cost. Cancel each job once.
 
 ### Too many tenants to name: `KeyedFair`
 
-Sixteen tenant slots is a crew roster. Orgs, API keys and IP prefixes are a starfield. `KeyedFair` hashes each key onto a fixed set of lanes, every lane with its own budget and no queue. A loud org fills its lane and gets `nil`; the other lanes don't notice. Keys that hash to the same lane share its budget, so pick enough lanes that a collision is rare.
+Sixteen tenant slots is a crew roster. Orgs, API keys and IP prefixes are a starfield. `KeyedFair` hashes each key onto a fixed set of lanes, every lane with its own budget and no queue. A loud org fills its lane and gets `:insufficient`; the other lanes don't notice. Keys that hash to the same lane share its budget, so pick enough lanes that a collision is rare.
 
 ```ruby
-fair = FairMachines::KeyedFair.new(lanes: 64, capacity: 8)
+fair = FairMachines::KeyedFair.new(64, 8)   # lanes, capacity per lane
 
-lane = fair.admit(hash: org_id.hash, cost: 1)   # => 17, or nil when that lane is full
+hash = org_id.hash & 0xFFFF_FFFF_FFFF_FFFF  # hashes are unsigned 64-bit
+lane = fair.admit(hash, 1)   # => #<data FairMachines::Lane index=17>, or :insufficient
 # ... do the work ...
-fair.release(lane:, cost: 1)                    # => true
+fair.release(lane, 1)        # => :released
 ```
 
-`lanes:` is a power of two from 1 to 256. Any Integer works as `hash:`, negatives included, so `key.hash` goes straight in.
+Any lane count from 1 to 256 works. `admit` hands back the `Lane` it charged so you don't hash twice. A lane is just a bucket number wrapped in a `Data`: the same hash lands in the same lane every time, in every `KeyedFair` with as many lanes, and you can ask for one without admitting anything.
+
+```ruby
+FairMachines::KeyedFair.lane(64, hash)    # => #<data FairMachines::Lane index=17>
+FairMachines::KeyedFair.lane_at(64, 63)   # => #<data FairMachines::Lane index=63>
+FairMachines::KeyedFair.lane_at(64, 64)   # => nil
+fair.in_flight(lane)                      # => 0
+fair.release(FairMachines::Lane.new(64), 1)   # => :unknown_lane
+```
 
 ## The Rules of the Escort
 
-- **1 to 16 tenants**, set by the length of `capacities:`. `quanta:` must be the same length. Empty, longer, or mismatched arrays raise `ArgumentError`.
-- **Capacities, quanta, and costs are positive Integers** below `2**32`. Zero is `ArgumentError`, negative or too large is `RangeError`, floats and strings are `TypeError`. Nothing is rounded for you.
-- **Heads are exactly `tenant_count` entries**, each a positive Integer or `nil`. The wrong length or a zero raises `ArgumentError`, and a float raises `TypeError`, before anything changes.
-- **Bad tenant indices don't raise.** `admit` and `cancel` with an unknown tenant return `false`.
-- **Frozen means frozen.** `freeze` the scheduler and `admit`, `cancel`, and `select` raise `FrozenError`. `tenant_count` still answers.
-- **A tenant that drains to empty loses its saved-up share.** Leftover quantum doesn't accumulate for a tenant with nothing queued.
+- **Ruby mirrors the Rust core.** Arguments are positional, in the core's order: `TenantFair.new(capacities, quanta)`, `admit(tenant, cost)`, `KeyedFair.new(lanes, capacity)`. `Lane` is a `Data` with an `index`. Where the core has a function on the type, `KeyedFair::<LANES>::lane(hash)`, Ruby has a class method that takes the lane count first: `KeyedFair.lane(lanes, hash)`.
+- **Every answer, by method.**
+
+  | Method | Honoured | Refused |
+  | --- | --- | --- |
+  | `TenantFair#admit(tenant, cost)` | `:admitted` | `:unknown_tenant`, `:insufficient` |
+  | `TenantFair#cancel(tenant, cost)` | `:cancelled` | `:unknown_tenant`, `:exceeds_in_flight` |
+  | `TenantFair#select(heads)` | the tenant to dispatch (Integer), `nil` exactly when every head is `nil` | `:exceeds_in_flight` |
+  | `TenantFair#in_flight(tenant)`, `#available(tenant)` | Integer, `nil` for an index that is not a tenant | never refuse |
+  | `KeyedFair#admit(hash, cost)` | the `Lane` charged | `:insufficient` |
+  | `KeyedFair#release(lane, cost)` | `:released` | `:unknown_lane`, `:exceeds_in_flight` |
+  | `KeyedFair#in_flight(lane)`, `#available(lane)` | Integer, `nil` for a lane this instance does not have | never refuse |
+  | `KeyedFair.lane(lanes, hash)` | a `Lane` | never refuses |
+  | `KeyedFair.lane_at(lanes, index)` | a `Lane`, `nil` for an index of `lanes` or more | never refuses |
+  | `tenant_count`, `lane_count` | Integer | never refuse |
+
+  Every refusal has its own symbol; there is no catch-all.
+- **A refusal never raises and changes nothing.** Not a budget, not a tenant's saved share, not whose turn it is.
+- **1 to 16 tenants**, set by the length of `capacities`; `quanta` must be the same length. Empty, longer, or mismatched arrays raise `ArgumentError`. `TenantFair::MAX_TENANTS` is the 16. The Rust core takes any count; the binding builds these.
+- **1 to 256 lanes**, any count, not only powers of two. Outside that is `ArgumentError`. `KeyedFair::MAX_LANES` is the 256.
+- **Capacities, quanta, and costs are positive Integers** below `2**32`. Zero, negative or too large is `RangeError`; floats and strings are `TypeError`. Nothing is rounded for you.
+- **Tenant indices and hashes are Integers** in `0...2**64`. Negative or too large is `RangeError`. Ruby's `#hash` can be negative: mask it, as above. A tenant index past the last tenant doesn't raise; it's `:unknown_tenant`.
+- **Heads are exactly `tenant_count` entries**, each a positive Integer or `nil`. The wrong length raises `ArgumentError`, a zero `RangeError`, a float `TypeError`, before anything changes.
+- **`release`, `in_flight` and `available` on a `KeyedFair` take a `Lane`**, not a bare Integer. Anything else is `TypeError`.
+- **A `Lane` is a bucket, not a ticket.** Nobody issued it and it proves nothing: anyone can build one, and two `KeyedFair`s with the same lane count agree on every lane. That's the point of hashing. Keep separate things in separate `KeyedFair`s and don't mix their lanes up.
+- **Repeats aren't recognised.** `cancel` and `release` count cost, so a second one is honoured while cost remains and `:exceeds_in_flight` after. There are no ids, so nothing survives a restart either: a new ledger starts empty.
+- **Frozen means frozen.** `freeze` either object and `admit`, `cancel`, `select`, and `release` raise `FrozenError`. Readers still answer.
+- **A tenant that drains to empty loses its saved-up share.** Leftover quantum doesn't accumulate for a tenant with nothing queued, and a tenant you present as `nil` to `select` is treated the same.
 
 ## What You Think You're Doing vs Reality
 
@@ -207,7 +248,7 @@ Taking turns by job count hands the pool to whoever submits the heaviest jobs. F
 
 ## What's Yours
 
-The scheduler is a ledger, not a queue. You keep a queue per tenant, call `admit` before you push, hand `select` the cost at the head of each queue, and pop the job from the tenant it names. Your cost estimates have to be honest, because the ledger believes them. And when a job dies on the floor without running, call `cancel`, or the tenant pays for it forever.
+The scheduler is a ledger, not a queue. You keep a queue per tenant, call `admit` before you push and push only on `:admitted`, hand `select` the cost at the head of each queue, and pop the job from the tenant it names. Your cost estimates have to be honest, because the ledger believes them. And when a job dies on the floor without running, call `cancel`, or the tenant pays for it forever.
 
 ## License
 

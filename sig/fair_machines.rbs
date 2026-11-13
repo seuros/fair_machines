@@ -1,18 +1,98 @@
+# Capacities, quanta and costs are Integers in 1..2**32-1: TypeError for
+# anything else, RangeError outside the range, zero included. Tenant and lane
+# positions and hashes are Integers in 0..2**64-1: TypeError for anything
+# else, RangeError outside the range. Arguments are positional, in the core's
+# order. A frozen object raises FrozenError on every mutating call. Refusals
+# are symbols, one per core `Refusal` variant; they never raise, and a
+# refused call changes nothing.
 module FairMachines
   VERSION: String
-  class TenantFair
-    def self.new: (capacities: Array[Integer], quanta: Array[Integer]) -> instance
-    def admit: (tenant: Integer, cost: Integer) -> bool
-    def cancel: (tenant: Integer, cost: Integer) -> bool
-    def select: (Array[Integer?] heads) -> Integer?
-    def tenant_count: () -> Integer
+
+  # The core's `Refusal`.
+  # :unknown_tenant, the tenant index is not one of the scheduler's tenants.
+  # :unknown_lane, the lane is not one of this instance's lanes.
+  # :insufficient, more cost asked for than the budget has available.
+  # :exceeds_in_flight, more cost returned than the budget has admitted.
+  type refusal = :unknown_tenant | :unknown_lane | :insufficient | :exceeds_in_flight
+
+  # The core's `Lane`: the bucket a hash maps to. A position, not an issued
+  # id: it can be built freely and proves nothing.
+  class Lane < Data
+    attr_reader index: Integer
+    def self.new: (Integer index) -> Lane
+                | (index: Integer) -> Lane
   end
+
+  # The core's `TenantFair<N>`; `N` is the length of the arrays.
+  class TenantFair
+    # Largest tenant count this binding builds. The core takes any `N`.
+    MAX_TENANTS: Integer
+
+    # The core's `TenantFair::new(capacities, quanta)`. Raises ArgumentError
+    # unless both arrays have the same length, in 1..MAX_TENANTS.
+    def self.new: (Array[Integer] capacities, Array[Integer] quanta) -> TenantFair
+
+    # Honoured: :admitted. Refused: :unknown_tenant, :insufficient.
+    def admit: (Integer tenant, Integer cost) -> (:admitted | :unknown_tenant | :insufficient)
+
+    # Honoured: :cancelled. Refused: :unknown_tenant, :exceeds_in_flight.
+    # A repeat cannot be recognised: it is honoured while that much cost is
+    # still admitted and refused once it is not.
+    def cancel: (Integer tenant, Integer cost) -> (:cancelled | :unknown_tenant | :exceeds_in_flight)
+
+    # `heads` has one entry per tenant: the cost at the head of its queue,
+    # nil when it has nothing waiting. Honoured: the tenant to dispatch, or
+    # nil exactly when every head is nil. Refused: :exceeds_in_flight, some
+    # head costs more than its tenant has admitted. Raises ArgumentError
+    # unless `heads` has tenant_count entries.
+    def select: (Array[Integer?] heads) -> (Integer | nil | :exceeds_in_flight)
+
+    def tenant_count: () -> Integer
+
+    # Cost admitted and not yet dispatched or cancelled; nil for an index
+    # that is not a tenant. A query.
+    def in_flight: (Integer tenant) -> Integer?
+
+    # Cost the tenant may still admit; nil for an index that is not a tenant.
+    def available: (Integer tenant) -> Integer?
+  end
+
+  # The core's `KeyedFair<LANES>`. `LANES` is a const generic in the core;
+  # here it is the first argument wherever the core names the type.
   class KeyedFair
-    def self.new: (lanes: Integer, capacity: Integer) -> instance
-    def admit: (hash: Integer, cost: Integer) -> Integer?
-    def release: (lane: Integer, cost: Integer) -> bool
-    def in_flight: (Integer lane) -> Integer
-    def lane: (Integer hash) -> Integer
+    # Largest lane count this binding builds. The core takes any `LANES > 0`.
+    MAX_LANES: Integer
+
+    # The core's `KeyedFair::<LANES>::new(capacity)`. Raises ArgumentError
+    # unless `lanes` is in 1..MAX_LANES.
+    def self.new: (Integer lanes, Integer capacity) -> KeyedFair
+
+    # The core's associated `KeyedFair::<LANES>::lane(hash)`: the lane a hash
+    # maps to. A pure function. Raises ArgumentError unless `lanes` is in
+    # 1..MAX_LANES.
+    def self.lane: (Integer lanes, Integer hash) -> Lane
+
+    # The core's associated `KeyedFair::<LANES>::lane_at(index)`: nil for an
+    # index of `lanes` or more. Raises ArgumentError unless `lanes` is in
+    # 1..MAX_LANES.
+    def self.lane_at: (Integer lanes, Integer index) -> Lane?
+
+    # Honoured: the Lane that was charged. Refused: :insufficient.
+    def admit: (Integer hash, Integer cost) -> (Lane | :insufficient)
+
+    # Honoured: :released. Refused: :unknown_lane, :exceeds_in_flight. A
+    # repeat cannot be recognised: it is honoured while that much cost is
+    # still in flight and refused once it is not. Raises TypeError unless
+    # given a Lane.
+    def release: (Lane lane, Integer cost) -> (:released | :unknown_lane | :exceeds_in_flight)
+
     def lane_count: () -> Integer
+
+    # Cost admitted to the lane and not yet released; nil for a lane this
+    # instance does not have. Raises TypeError unless given a Lane.
+    def in_flight: (Lane lane) -> Integer?
+
+    # Cost the lane may still admit; nil for a lane this instance does not have.
+    def available: (Lane lane) -> Integer?
   end
 end
