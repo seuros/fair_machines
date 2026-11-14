@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.0](https://github.com/seuros/fair_machines/compare/fair_machines/v0.2.0...fair_machines/v0.3.0) (2026-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* validate Lane through the core, seal it, exact-class reads, clone-then-keep admit
+
+### Features
+
+* validate Lane through the core, seal it, exact-class reads, clone-then-keep admit ([2f819ae](https://github.com/seuros/fair_machines/commit/2f819aeed1bfc76251be703b14e8dafd6d17ee45))
+
 ## [0.2.0](https://github.com/seuros/fair_machines/compare/fair_machines/v0.1.5...fair_machines/v0.2.0) (2026-11-13)
 
 
