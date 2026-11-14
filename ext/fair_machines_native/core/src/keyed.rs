@@ -10,13 +10,21 @@ use crate::Refusal;
 /// the cost with [`KeyedFair::release`] without hashing again. A lane is a
 /// pure function of the hash and `LANES`: nothing is counted or issued, the
 /// same hash names the same lane in every instance with as many lanes, and
-/// [`KeyedFair::lane`] or [`KeyedFair::lane_at`] build one without admitting
-/// anything. It therefore carries no scope and proves nothing: holding a
-/// lane does not show that cost was admitted to it.
+/// [`KeyedFair::lane`], [`KeyedFair::lane_at`] or [`Lane::new`] build one
+/// without admitting anything. It therefore carries no scope and proves
+/// nothing: holding a lane does not show that cost was admitted to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Lane(usize);
 
 impl Lane {
+    /// The lane at position `index`, for no instance in particular. Every
+    /// position is a lane of some `KeyedFair`; one with `index` lanes or
+    /// fewer answers [`Refusal::UnknownLane`] or `None` for it.
+    #[must_use]
+    pub const fn new(index: usize) -> Self {
+        Self(index)
+    }
+
     /// Position of the lane, in `0..LANES` of the instance it was built for.
     #[must_use]
     pub const fn index(self) -> usize {

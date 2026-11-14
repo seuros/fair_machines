@@ -1,13 +1,16 @@
 //! Exact const-generic lane counts erased only for the host binding.
 
-use crate::{Index, Positive, arg_error, done, integer, refusal};
+use crate::sealed::Sealed;
+use crate::{done, index, positive, range_error, refusal};
 use fair_machines::{KeyedFair, Lane, Refusal};
-use magnus::{
-    Error, RClass, RModule, Ruby, TryConvert, Value, function, method, prelude::*, typed_data::Obj,
-};
-use std::{cell::RefCell, num::NonZeroU32};
+use magnus::{Error, RModule, Ruby, Value, function, method, prelude::*, typed_data::Obj};
+use std::{any::Any, cell::RefCell, num::NonZeroU32};
 
-/// Largest lane count the binding instantiates; the core takes any `LANES > 0`.
+/// `FairMachines::Lane`, resolved at init.
+static LANE: Sealed = Sealed::new("Lane");
+
+/// Largest `LANES` compiled into the binding: `KeyedFair<1>` to
+/// `KeyedFair<256>`. The core takes any `LANES > 0`.
 const MAX_LANES: usize = 256;
 
 /// One lane count: the associated functions, and a constructor.
@@ -19,45 +22,55 @@ struct Shape {
 }
 
 trait Lanes: Send {
-    fn admit(&mut self, hash: u64, cost: NonZeroU32) -> Result<usize, Refusal>;
-    fn release(&mut self, lane: usize, cost: NonZeroU32) -> Result<(), Refusal>;
+    fn copy(&self) -> Box<dyn Lanes>;
+    fn same(&self, other: &dyn Lanes) -> bool;
+    fn as_any(&self) -> &dyn Any;
+    fn admit(&mut self, hash: u64, cost: NonZeroU32) -> Result<Lane, Refusal>;
+    fn release(&mut self, lane: Lane, cost: NonZeroU32) -> Result<(), Refusal>;
     fn lane_count(&self) -> usize;
-    fn in_flight(&self, lane: usize) -> Option<u32>;
-    fn available(&self, lane: usize) -> Option<u32>;
+    fn in_flight(&self, lane: Lane) -> Option<u32>;
+    fn available(&self, lane: Lane) -> Option<u32>;
 }
 
 impl<const N: usize> Lanes for KeyedFair<N> {
-    fn admit(&mut self, hash: u64, cost: NonZeroU32) -> Result<usize, Refusal> {
-        self.admit(hash, cost).map(Lane::index)
+    fn copy(&self) -> Box<dyn Lanes> {
+        Box::new(self.clone())
     }
-    /// An index this lane count cannot build a `Lane` for is the core's
-    /// `UnknownLane`: a lane this instance does not have.
-    fn release(&mut self, lane: usize, cost: NonZeroU32) -> Result<(), Refusal> {
-        let lane = Self::lane_at(lane).ok_or(Refusal::UnknownLane)?;
+    fn same(&self, other: &dyn Lanes) -> bool {
+        other.as_any().downcast_ref::<Self>() == Some(self)
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn admit(&mut self, hash: u64, cost: NonZeroU32) -> Result<Lane, Refusal> {
+        self.admit(hash, cost)
+    }
+    fn release(&mut self, lane: Lane, cost: NonZeroU32) -> Result<(), Refusal> {
         self.release(lane, cost)
     }
     fn lane_count(&self) -> usize {
         self.lane_count()
     }
-    fn in_flight(&self, lane: usize) -> Option<u32> {
-        self.in_flight(Self::lane_at(lane)?)
+    fn in_flight(&self, lane: Lane) -> Option<u32> {
+        self.in_flight(lane)
     }
-    fn available(&self, lane: usize) -> Option<u32> {
-        self.available(Self::lane_at(lane)?)
+    fn available(&self, lane: Lane) -> Option<u32> {
+        self.available(lane)
     }
 }
 
-/// The shape of `KeyedFair<lanes>`, or `ArgumentError` outside `1..=256`.
-fn shape(ruby: &Ruby, lanes: Index) -> Result<Shape, Error> {
+/// The shape of `KeyedFair<lanes>`, or `RangeError` outside `1..=256`.
+fn shape(ruby: &Ruby, lanes: Value) -> Result<Shape, Error> {
+    let lanes = index(lanes, "lanes")?;
     macro_rules! sized {
         ($($n:literal),*) => {
-            match lanes.0 {
+            match lanes {
                 $($n => Shape {
                     lane: |hash| KeyedFair::<$n>::lane(hash).index(),
                     lane_at: |index| KeyedFair::<$n>::lane_at(index).map(Lane::index),
                     build: |capacity| Box::new(KeyedFair::<$n>::new(capacity)),
                 },)*
-                _ => return Err(arg_error(ruby, "lanes must be 1..256")),
+                _ => return Err(range_error(ruby, format!("lanes must be in 1..={MAX_LANES}"))),
             }
         };
     }
@@ -81,75 +94,78 @@ fn shape(ruby: &Ruby, lanes: Index) -> Result<Shape, Error> {
     Ok(shape)
 }
 
-/// A hash: an Integer in `0..2**64`.
-#[derive(Clone, Copy)]
-struct Hash(u64);
-
-impl TryConvert for Hash {
-    fn try_convert(value: Value) -> Result<Self, Error> {
-        integer(value)?.to_u64().map(Self)
-    }
-}
-
-fn lane_class(ruby: &Ruby) -> Result<RClass, Error> {
-    ruby.define_module("FairMachines")?.const_get("Lane")
-}
-
-/// A `FairMachines::Lane` for `index`.
+/// A `FairMachines::Lane` for `index`, through `Lane.new`.
 fn lane_value(ruby: &Ruby, index: usize) -> Result<Value, Error> {
-    lane_class(ruby)?.funcall("new", (index,))
+    LANE.build(ruby, (index,))
 }
 
-/// The index of a `FairMachines::Lane`; `TypeError` for anything else.
-fn lane_index(ruby: &Ruby, lane: Value) -> Result<usize, Error> {
-    if !lane.is_kind_of(lane_class(ruby)?) {
-        return Err(Error::new(
-            ruby.exception_type_error(),
-            "expected a FairMachines::Lane",
-        ));
-    }
-    lane.funcall::<_, _, Index>("index", ())
-        .map(|index| index.0)
+/// The core `Lane` of a `FairMachines::Lane`: `TypeError` for anything but
+/// an instance of exactly that class, and its member re-validated as
+/// `Lane::new` holds it, so a forged value never reaches the core.
+fn core_lane(ruby: &Ruby, lane: Value) -> Result<Lane, Error> {
+    let position = LANE.read(ruby, lane, "lane")?.get("index")?;
+    index(position, "lane index").map(Lane::new)
+}
+
+/// `FairMachines.__lane`, the private hook `Lane.new` validates through:
+/// the index as `Lane::new` holds it.
+fn validated(position: Value) -> Result<usize, Error> {
+    index(position, "index").map(|position| Lane::new(position).index())
 }
 
 #[magnus::wrap(class = "FairMachines::KeyedFair", free_immediately, size)]
 struct Wrapper(RefCell<Box<dyn Lanes>>);
 
 impl Wrapper {
-    fn new(ruby: &Ruby, lanes: Index, capacity: Positive) -> Result<Self, Error> {
+    fn new(ruby: &Ruby, lanes: Value, capacity: Value) -> Result<Self, Error> {
         let build = shape(ruby, lanes)?.build;
-        Ok(Self(RefCell::new(build(capacity.0))))
+        Ok(Self(RefCell::new(build(positive(capacity, "capacity")?))))
     }
 
     /// `KeyedFair::<LANES>::lane(hash)`: the lane count comes first.
-    fn lane(ruby: &Ruby, lanes: Index, hash: Hash) -> Result<Value, Error> {
+    fn lane(ruby: &Ruby, lanes: Value, hash: Value) -> Result<Value, Error> {
         let lane = shape(ruby, lanes)?.lane;
-        lane_value(ruby, lane(hash.0))
+        lane_value(ruby, lane(crate::hash(hash)?))
     }
 
     /// `KeyedFair::<LANES>::lane_at(index)`: the lane count comes first.
-    fn lane_at(ruby: &Ruby, lanes: Index, index: Index) -> Result<Option<Value>, Error> {
+    fn lane_at(ruby: &Ruby, lanes: Value, position: Value) -> Result<Option<Value>, Error> {
         let lane_at = shape(ruby, lanes)?.lane_at;
-        lane_at(index.0)
-            .map(|index| lane_value(ruby, index))
+        lane_at(index(position, "index")?)
+            .map(|position| lane_value(ruby, position))
             .transpose()
     }
 
-    fn admit(ruby: &Ruby, this: Obj<Self>, hash: Hash, cost: Positive) -> Result<Value, Error> {
+    /// Clone-then-keep: the core admits on a copy, the Lane is built, and
+    /// the copy is stored only if the receiver is still unfrozen and
+    /// unchanged; otherwise nothing is admitted.
+    fn admit(ruby: &Ruby, this: Obj<Self>, hash: Value, cost: Value) -> Result<Value, Error> {
         this.check_frozen()?;
-        // Resolve the class before admitting, so a failure admits nothing.
-        lane_class(ruby)?;
-        let answer = this.0.borrow_mut().admit(hash.0, cost.0);
-        match answer {
-            Ok(index) => lane_value(ruby, index),
-            Err(refused) => Ok(refusal(ruby, refused)),
+        let (hash, cost) = (crate::hash(hash)?, positive(cost, "cost")?);
+        let before = this.0.borrow().copy();
+        let mut after = before.copy();
+        let lane = match after.admit(hash, cost) {
+            Ok(lane) => lane,
+            Err(refused) => return Ok(refusal(ruby, refused)),
+        };
+        let value = lane_value(ruby, lane.index())?;
+        this.check_frozen()?;
+        let mut held = this.0.borrow_mut();
+        if !held.same(&*before) {
+            return Err(Error::new(
+                ruby.exception_runtime_error(),
+                "the KeyedFair changed while the answer was built; the admission was not applied",
+            ));
         }
+        *held = after;
+        Ok(value)
     }
 
-    fn release(ruby: &Ruby, this: Obj<Self>, lane: Value, cost: Positive) -> Result<Value, Error> {
+    fn release(ruby: &Ruby, this: Obj<Self>, lane: Value, cost: Value) -> Result<Value, Error> {
         this.check_frozen()?;
-        let index = lane_index(ruby, lane)?;
-        let answer = this.0.borrow_mut().release(index, cost.0);
+        let lane = core_lane(ruby, lane)?;
+        let cost = positive(cost, "cost")?;
+        let answer = this.0.borrow_mut().release(lane, cost);
         Ok(done(ruby, answer, "released"))
     }
 
@@ -158,17 +174,19 @@ impl Wrapper {
     }
 
     fn in_flight(ruby: &Ruby, this: &Self, lane: Value) -> Result<Option<u32>, Error> {
-        let index = lane_index(ruby, lane)?;
-        Ok(this.0.borrow().in_flight(index))
+        let lane = core_lane(ruby, lane)?;
+        Ok(this.0.borrow().in_flight(lane))
     }
 
     fn available(ruby: &Ruby, this: &Self, lane: Value) -> Result<Option<u32>, Error> {
-        let index = lane_index(ruby, lane)?;
-        Ok(this.0.borrow().available(index))
+        let lane = core_lane(ruby, lane)?;
+        Ok(this.0.borrow().available(lane))
     }
 }
 
 pub fn define(ruby: &Ruby, module: RModule) -> Result<(), Error> {
+    LANE.resolve(ruby, module)?;
+    module.define_singleton_method("__lane", function!(validated, 1))?;
     let class = module.define_class("KeyedFair", ruby.class_object())?;
     class.undef_default_alloc_func();
     class.const_set("MAX_LANES", MAX_LANES)?;

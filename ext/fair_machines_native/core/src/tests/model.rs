@@ -1,5 +1,6 @@
 //! Randomized run against a plain reference model.
 use super::*;
+use crate::test_support::{Refusals, Rng};
 use priority_machines::DeficitRoundRobin;
 
 const N: usize = 3;
@@ -30,7 +31,7 @@ impl Model {
         }
         *queued -= cost;
         if *queued == 0 {
-            self.drr.deactivate(tenant).expect("a known lane");
+            assert!(self.drr.deactivate(tenant).is_ok(), "a known lane");
         }
         Ok(())
     }
@@ -46,28 +47,15 @@ impl Model {
             assert!(heads.iter().all(Option::is_none));
             return Ok(None);
         };
-        let cost = heads[tenant].expect("a selected head");
+        let Some(cost) = heads[tenant] else {
+            panic!("DRR selected a lane without a head");
+        };
         self.give_back(tenant, cost.get())?;
         Ok(Some(tenant))
     }
 }
 
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
-    }
-    #[allow(clippy::cast_possible_truncation)]
-    fn below(&mut self, bound: u32) -> u32 {
-        (self.next() % u64::from(bound)) as u32
-    }
-}
-
-fn run(seed: u64, refusals: &mut [u32; 3], drains: &mut u32) {
+fn run(seed: u64, refusals: &mut Refusals, drains: &mut u32) {
     let mut rng = Rng(seed);
     let capacities: [u32; N] = core::array::from_fn(|_| 1 + rng.below(12));
     let quanta: [u32; N] = core::array::from_fn(|_| 1 + rng.below(5));
@@ -79,7 +67,7 @@ fn run(seed: u64, refusals: &mut [u32; 3], drains: &mut u32) {
     };
     for _ in 0..300 {
         let before = fair.clone();
-        let tenant = rng.below(4) as usize; // 0..=N: one past the end
+        let tenant = rng.index(4); // 0..=N: one past the end
         let cost = 1 + rng.below(8);
         let refused = match rng.below(4) {
             0 | 1 => {
@@ -108,15 +96,7 @@ fn run(seed: u64, refusals: &mut [u32; 3], drains: &mut u32) {
                 answer.err()
             }
         };
-        if let Some(refusal) = refused {
-            assert_eq!(fair, before, "{refusal:?} changed the scheduler");
-            refusals[match refusal {
-                Refusal::UnknownTenant => 0,
-                Refusal::Insufficient => 1,
-                Refusal::ExceedsInFlight => 2,
-                Refusal::UnknownLane => unreachable!("TenantFair has no lanes"),
-            }] += 1;
-        }
+        refusals.record(refused, &fair, &before);
         for (tenant, (queued, capacity)) in model.queued.iter().zip(capacities).enumerate() {
             assert_eq!(fair.in_flight(tenant), Some(*queued));
             assert_eq!(fair.available(tenant), Some(capacity - queued));
@@ -127,7 +107,7 @@ fn run(seed: u64, refusals: &mut [u32; 3], drains: &mut u32) {
 
 #[test]
 fn random_runs_match_the_model_and_refusals_change_nothing() {
-    let (mut refusals, mut drains) = ([0; 3], 0);
+    let (mut refusals, mut drains) = (Refusals::default(), 0);
     for seed in 1..=300_u64 {
         run(
             seed.wrapping_mul(0x9E37_79B9_7F4A_7C15),
@@ -135,6 +115,13 @@ fn random_runs_match_the_model_and_refusals_change_nothing() {
             &mut drains,
         );
     }
-    assert!(refusals.iter().all(|count| *count > 0), "{refusals:?}");
+    let Refusals {
+        unknown_tenant,
+        unknown_lane,
+        insufficient,
+        exceeds_in_flight,
+    } = refusals;
+    assert_eq!(unknown_lane, 0, "TenantFair has no lanes");
+    assert!(unknown_tenant > 0 && insufficient > 0 && exceeds_in_flight > 0);
     assert!(drains > 0);
 }

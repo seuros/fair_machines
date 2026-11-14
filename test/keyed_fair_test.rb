@@ -76,9 +76,9 @@ class KeyedFairTest < Minitest::Test
 
   def test_strict_construction_and_arguments
     [0, 257, 512].each do |lanes|
-      assert_raises(ArgumentError) { KeyedFair.new(lanes, 1) }
-      assert_raises(ArgumentError) { KeyedFair.lane(lanes, 0) }
-      assert_raises(ArgumentError) { KeyedFair.lane_at(lanes, 0) }
+      assert_raises(RangeError) { KeyedFair.new(lanes, 1) }
+      assert_raises(RangeError) { KeyedFair.lane(lanes, 0) }
+      assert_raises(RangeError) { KeyedFair.lane_at(lanes, 0) }
     end
     assert_raises(RangeError) { KeyedFair.new(-1, 1) }
     assert_raises(RangeError) { KeyedFair.new(4, 0) }
@@ -89,9 +89,84 @@ class KeyedFairTest < Minitest::Test
     assert_raises(RangeError) { fair.admit(0, 0) }
     assert_raises(TypeError) { fair.release(0, 1) }
     assert_raises(TypeError) { fair.in_flight(0) }
-    assert_raises(TypeError) { fair.release(Lane.new('0'), 1) }
-    assert_raises(RangeError) { fair.release(Lane.new(-1), 1) }
     assert_raises(RangeError) { fair.release(Lane.new(0), 0) }
+  end
+
+  def test_messages_name_the_argument
+    fair = KeyedFair.new(4, 2)
+    {
+      -> { KeyedFair.new(0, 1) } => [RangeError, 'lanes must be in 1..=256'],
+      -> { KeyedFair.new(4, nil) } => [TypeError, 'capacity must be an Integer, not NilClass'],
+      -> { KeyedFair.lane(4, -1) } => [RangeError, "hash must be in 0..=#{LAST}"],
+      -> { KeyedFair.lane_at(4, 1.5) } => [TypeError, 'index must be an Integer, not Float'],
+      -> { fair.admit(0, 0) } => [RangeError, 'cost must be in 1..=4294967295'],
+      -> { fair.release(0, 1) } => [TypeError, 'lane must be a FairMachines::Lane'],
+      -> { Lane.new(-1) } => [RangeError, "index must be in 0..=#{LAST}"]
+    }.each do |call, (error, message)|
+      assert_equal message, assert_raises(error, &call).message
+    end
+  end
+
+  def test_a_lane_is_valid_or_does_not_exist
+    ['0', 1.5, nil, :a].each { |index| assert_raises(TypeError) { Lane.new(index) } }
+    [-1, 2**64].each { |index| assert_raises(RangeError) { Lane.new(index) } }
+    assert_raises(RangeError) { Lane.new(index: -1) }
+    assert_raises(RangeError) { Lane.new(3).with(index: -1) }
+    assert_raises(ArgumentError) { Lane.new }
+    assert_equal Lane.new(3), Lane.new(index: 3)
+    assert_equal LAST, Lane.new(LAST).index
+    refute_respond_to FairMachines, :__lane
+  end
+
+  # Runs `hook` inside `Lane.new` while it is set, without redefining `new`.
+  module LaneHook
+    attr_accessor :hook
+
+    def new(...)
+      hook&.call
+      super
+    end
+  end
+  Lane.singleton_class.prepend(LaneHook)
+
+  def with_lane_hook(hook)
+    Lane.hook = hook
+    yield
+  ensure
+    Lane.hook = nil
+  end
+
+  def budgets(fair)
+    Array.new(fair.lane_count) { |index| [fair.in_flight(Lane.new(index)), fair.available(Lane.new(index))] }
+  end
+
+  # The binding never loses work: the core admits on a copy, kept only once
+  # the Lane is built and the receiver is still unfrozen and unchanged.
+  def test_admit_charges_nothing_when_the_lane_cannot_be_built
+    fair = KeyedFair.new(4, 2)
+    before = budgets(fair)
+    with_lane_hook(-> { raise 'no lane' }) do
+      assert_equal 'no lane', assert_raises(RuntimeError) { fair.admit(0, 1) }.message
+    end
+    assert_equal before, budgets(fair)
+  end
+
+  def test_admit_reentered_while_the_lane_is_built_applies_nothing
+    fair = KeyedFair.new(4, 2)
+    with_lane_hook(-> { Lane.hook = nil; fair.admit(LAST, 1) }) do
+      error = assert_raises(RuntimeError) { fair.admit(0, 1) }
+      assert_match(/changed while the answer was built/, error.message)
+    end
+    # Only the inner admission (lane 3) happened; the outer one (lane 0) did not.
+    assert_equal [[0, 2], [0, 2], [0, 2], [1, 1]], budgets(fair)
+  end
+
+  def test_admit_frozen_while_the_lane_is_built_applies_nothing
+    fair = KeyedFair.new(4, 2)
+    with_lane_hook(-> { fair.freeze }) do
+      assert_raises(FrozenError) { fair.admit(0, 1) }
+    end
+    assert_equal [[0, 2]] * 4, budgets(fair)
   end
 
   def test_frozen

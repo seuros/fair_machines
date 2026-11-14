@@ -6,6 +6,8 @@ use priority_machines::{Deactivation, DeficitRoundRobin};
 
 mod keyed;
 mod refusal;
+#[cfg(test)]
+mod test_support;
 
 pub use keyed::{KeyedFair, Lane};
 pub use refusal::Refusal;
@@ -64,14 +66,23 @@ impl<const N: usize> TenantFair<N> {
         if !self.budgets.iter().zip(heads).all(admitted) {
             return Err(Refusal::ExceedsInFlight);
         }
-        let Some(tenant) = self.scheduler.select(heads) else {
+        // The round is decided on a copy and committed last, so no path
+        // out of here leaves half a round behind.
+        let mut scheduler = self.scheduler.clone();
+        let Some(tenant) = scheduler.select(heads) else {
+            self.scheduler = scheduler;
             return Ok(None);
         };
-        // The scheduler only selects a lane with a head, and every head was
-        // checked against its budget above, so this return is never refused.
-        if let Some(cost) = heads[tenant] {
-            self.release(tenant, cost)?;
-        }
+        let Some(cost) = heads.get(tenant).copied().flatten() else {
+            debug_assert!(false, "DRR selects only a lane presented with a head");
+            return Err(Refusal::ExceedsInFlight);
+        };
+        let Ok(budget) = Self::returned(&self.budgets, &mut scheduler, tenant, cost) else {
+            debug_assert!(false, "every head was checked against its tenant's budget");
+            return Err(Refusal::ExceedsInFlight);
+        };
+        self.budgets[tenant] = budget;
+        self.scheduler = scheduler;
         Ok(Some(tenant))
     }
 
@@ -87,7 +98,9 @@ impl<const N: usize> TenantFair<N> {
     /// [`Refusal::ExceedsInFlight`] when `cost` exceeds what the tenant has
     /// admitted: there is no partial return. Nothing changed.
     pub fn cancel(&mut self, tenant: usize, cost: NonZeroU32) -> Result<(), Refusal> {
-        self.release(tenant, cost)
+        let budget = Self::returned(&self.budgets, &mut self.scheduler, tenant, cost)?;
+        self.budgets[tenant] = budget;
+        Ok(())
     }
 
     /// Number of tenants, `N`.
@@ -109,18 +122,26 @@ impl<const N: usize> TenantFair<N> {
         self.budgets.get(tenant).map(CreditWindow::available)
     }
 
-    /// Return queued cost; a drained tenant leaves the DRR rotation.
-    fn release(&mut self, tenant: usize, cost: NonZeroU32) -> Result<(), Refusal> {
-        let budget = self.budgets.get_mut(tenant).ok_or(Refusal::UnknownTenant)?;
+    /// The tenant's budget with `cost` returned; a drained tenant leaves the
+    /// rotation of `scheduler`. The budget is answered, not stored: the
+    /// scheduler's answer comes last, so a refusal has changed nothing.
+    fn returned(
+        budgets: &[CreditWindow; N],
+        scheduler: &mut DeficitRoundRobin<N>,
+        tenant: usize,
+        cost: NonZeroU32,
+    ) -> Result<CreditWindow, Refusal> {
+        let mut budget = budgets.get(tenant).ok_or(Refusal::UnknownTenant)?.clone();
         budget.release(cost).map_err(Refusal::from_flow)?;
         if budget.in_flight() > 0 {
-            return Ok(());
+            return Ok(budget);
         }
-        // `tenant` indexed `budgets`, and the scheduler has the same `N`
-        // lanes, so this is never refused.
-        match self.scheduler.deactivate(tenant) {
-            Ok(Deactivation::Deactivated | Deactivation::Idle) => Ok(()),
-            Err(refusal) => Err(Refusal::from_priority(refusal)),
+        match scheduler.deactivate(tenant) {
+            Ok(Deactivation::Deactivated | Deactivation::Idle) => Ok(budget),
+            Err(refusal) => {
+                debug_assert!(false, "the scheduler has the same N lanes as the budgets");
+                Err(Refusal::from_priority(refusal))
+            }
         }
     }
 }

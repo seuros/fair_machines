@@ -1,11 +1,7 @@
-#![allow(clippy::expect_used)]
 use super::*;
+use crate::test_support::nz;
 
 mod model;
-
-pub fn nz(x: u32) -> NonZeroU32 {
-    NonZeroU32::new(x).expect("positive")
-}
 
 fn heads<const N: usize>(costs: [u32; N]) -> [Option<NonZeroU32>; N] {
     costs.map(NonZeroU32::new)
@@ -31,19 +27,6 @@ fn tenant_capacity_cannot_be_stolen() {
 }
 
 #[test]
-fn an_unadmitted_head_refuses_the_whole_selection() {
-    let mut fair = TenantFair::new([nz(5), nz(5)], [nz(1); 2]);
-    assert_eq!(fair.admit(1, nz(1)), Ok(()));
-    let before = fair.clone();
-    // Tenant 0 admitted nothing; tenant 1 admitted 1 and presents 2.
-    assert_eq!(fair.select(&heads([1, 1])), Err(Refusal::ExceedsInFlight));
-    assert_eq!(fair.select(&heads([0, 2])), Err(Refusal::ExceedsInFlight));
-    assert_eq!(fair, before);
-    assert_eq!(fair.select(&heads([0, 1])), Ok(Some(1)));
-    assert_eq!(fair.in_flight(1), Some(0));
-}
-
-#[test]
 fn every_refusal_changes_nothing() {
     let mut fair = TenantFair::new([nz(4), nz(4)], [nz(3), nz(1)]);
     assert_eq!(fair.admit(0, nz(4)), Ok(()));
@@ -55,8 +38,19 @@ fn every_refusal_changes_nothing() {
     assert_eq!(fair.admit(9, nz(1)), Err(Refusal::UnknownTenant));
     assert_eq!(fair.cancel(1, nz(3)), Err(Refusal::ExceedsInFlight));
     assert_eq!(fair.cancel(9, nz(1)), Err(Refusal::UnknownTenant));
+    // A head costing more than its tenant admitted refuses the whole round.
     assert_eq!(fair.select(&heads([4, 1])), Err(Refusal::ExceedsInFlight));
+    assert_eq!(fair.select(&heads([0, 3])), Err(Refusal::ExceedsInFlight));
     assert_eq!(fair, before);
+
+    // A tenant that admitted nothing cannot present a head at all.
+    let mut fair = TenantFair::new([nz(5), nz(5)], [nz(1); 2]);
+    assert_eq!(fair.admit(1, nz(1)), Ok(()));
+    let before = fair.clone();
+    assert_eq!(fair.select(&heads([1, 1])), Err(Refusal::ExceedsInFlight));
+    assert_eq!(fair, before);
+    assert_eq!(fair.select(&heads([0, 1])), Ok(Some(1)));
+    assert_eq!(fair.in_flight(1), Some(0));
 }
 
 #[test]
@@ -87,28 +81,31 @@ fn a_drained_tenant_loses_its_saved_credit() {
 }
 
 #[test]
-fn refusal_is_an_error_with_distinct_variants() {
-    let all = [
-        Refusal::UnknownTenant,
-        Refusal::UnknownLane,
-        Refusal::Insufficient,
-        Refusal::ExceedsInFlight,
+fn refusals_describe_themselves() {
+    extern crate std;
+    use std::string::ToString;
+
+    let cases = [
+        (
+            Refusal::UnknownTenant,
+            "tenant index is not one of the scheduler's tenants",
+        ),
+        (
+            Refusal::UnknownLane,
+            "lane is not one of this instance's lanes",
+        ),
+        (
+            Refusal::Insufficient,
+            "more cost asked for than the budget has available",
+        ),
+        (
+            Refusal::ExceedsInFlight,
+            "more cost returned than the budget has admitted",
+        ),
     ];
-    let error: &dyn core::error::Error = &all[0];
-    assert!(error.source().is_none());
-    for (i, refusal) in all.iter().enumerate() {
-        for other in &all[i + 1..] {
-            assert_ne!(refusal, other);
-        }
+    for (refusal, text) in cases {
+        assert_eq!(refusal.to_string(), text);
     }
-    let insufficient = flow_machines::Refusal::Insufficient { available: 0 };
-    let exceeds = flow_machines::Refusal::ExceedsInFlight { in_flight: 0 };
-    assert_eq!(Refusal::from_flow(insufficient), Refusal::Insufficient);
-    assert_eq!(Refusal::from_flow(exceeds), Refusal::ExceedsInFlight);
-    assert_eq!(
-        Refusal::from_priority(priority_machines::Refusal::UnknownLane),
-        Refusal::UnknownTenant
-    );
 }
 
 #[test]

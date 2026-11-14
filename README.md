@@ -226,14 +226,17 @@ fair.release(FairMachines::Lane.new(64), 1)   # => :unknown_lane
   | `KeyedFair.lane_at(lanes, index)` | a `Lane`, `nil` for an index of `lanes` or more | never refuses |
   | `tenant_count`, `lane_count` | Integer | never refuse |
 
-  Every refusal has its own symbol; there is no catch-all.
+  Every refusal has its own symbol; there is no catch-all. No method takes a time, so no answer records a clock.
 - **A refusal never raises and changes nothing.** Not a budget, not a tenant's saved share, not whose turn it is.
-- **1 to 16 tenants**, set by the length of `capacities`; `quanta` must be the same length. Empty, longer, or mismatched arrays raise `ArgumentError`. `TenantFair::MAX_TENANTS` is the 16. The Rust core takes any count; the binding builds these.
-- **1 to 256 lanes**, any count, not only powers of two. Outside that is `ArgumentError`. `KeyedFair::MAX_LANES` is the 256.
+- **1 to 16 tenants**, set by the length of `capacities`; `quanta` must be the same length. Empty, longer, or mismatched arrays raise `RangeError`. The tenant count is the core's const generic `N`, and the core has no ceiling of its own: `TenantFair::MAX_TENANTS`, 16, is the largest `N` compiled into the binding.
+- **1 to 256 lanes**, any count, not only powers of two. Outside that is `RangeError`. The lane count is the core's const generic `LANES`; `KeyedFair::MAX_LANES`, 256, is the largest compiled into the binding.
+- **Wrong type is `TypeError`, wrong value is `RangeError`,** and the message names the argument (`tenant must be an Integer, not String`, `cost must be in 1..=4294967295`). `ArgumentError` is Ruby's own, for the wrong number of arguments.
 - **Capacities, quanta, and costs are positive Integers** below `2**32`. Zero, negative or too large is `RangeError`; floats and strings are `TypeError`. Nothing is rounded for you.
-- **Tenant indices and hashes are Integers** in `0...2**64`. Negative or too large is `RangeError`. Ruby's `#hash` can be negative: mask it, as above. A tenant index past the last tenant doesn't raise; it's `:unknown_tenant`.
-- **Heads are exactly `tenant_count` entries**, each a positive Integer or `nil`. The wrong length raises `ArgumentError`, a zero `RangeError`, a float `TypeError`, before anything changes.
+- **Hashes are Integers** in `0...2**64`; **tenant indices** are Integers a `usize` holds (`0...2**64` on a 64-bit platform, `0...2**32` on a 32-bit one). Negative or too large is `RangeError`. Ruby's `#hash` can be negative: mask it, as above. A tenant index past the last tenant doesn't raise; it's `:unknown_tenant`.
+- **Heads are exactly `tenant_count` entries**, each a positive Integer or `nil`. The wrong length or a zero raises `RangeError`, a float `TypeError`, before anything changes.
 - **`release`, `in_flight` and `available` on a `KeyedFair` take a `Lane`**, not a bare Integer. Anything else is `TypeError`.
+- **A `Lane` is valid or does not exist.** `Lane.new(index)` is the core's `Lane::new(index)`: an Integer a `usize` holds, `TypeError` for anything else, `RangeError` outside the range. One you build by hand is held to the same rule as one `admit` returned. `Lane` is sealed: subclassing it raises `TypeError` and `allocate` is gone. That stops accidents, not reflection, so the binding checks too: a lane it reads must be an instance of exactly `Lane` (`TypeError` otherwise) and its index is re-checked (`RangeError`), so a lane forged with `Data#initialize` or `Marshal` never reaches the core.
+- **The binding never loses work.** Everything that can raise happens before the core is called. `admit` charges a copy, builds the `Lane` it answers, and keeps the copy only if the `KeyedFair` is still unfrozen and unchanged: if building the lane raises, freezes it (`FrozenError`) or calls back into it (`RuntimeError`), nothing is charged.
 - **A `Lane` is a bucket, not a ticket.** Nobody issued it and it proves nothing: anyone can build one, and two `KeyedFair`s with the same lane count agree on every lane. That's the point of hashing. Keep separate things in separate `KeyedFair`s and don't mix their lanes up.
 - **Repeats aren't recognised.** `cancel` and `release` count cost, so a second one is honoured while cost remains and `:exceeds_in_flight` after. There are no ids, so nothing survives a restart either: a new ledger starts empty.
 - **Frozen means frozen.** `freeze` either object and `admit`, `cancel`, `select`, and `release` raise `FrozenError`. Readers still answer.

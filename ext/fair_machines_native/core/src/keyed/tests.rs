@@ -1,14 +1,21 @@
-#![allow(clippy::expect_used)]
 use super::*;
-use crate::tests::nz;
+use crate::test_support::{Refusals, Rng, nz};
+
+/// The lane at `index` of a `KeyedFair<LANES>`, which must have it.
+fn lane_at<const LANES: usize>(index: usize) -> Lane {
+    let Some(lane) = KeyedFair::<LANES>::lane_at(index) else {
+        panic!("{index} is a lane of {LANES}");
+    };
+    lane
+}
 
 #[test]
 fn a_lane_cannot_borrow_another_lanes_budget() {
     let mut fair = KeyedFair::<4>::new(nz(2));
     let (hot, cold) = (0, u64::MAX);
     assert_ne!(KeyedFair::<4>::lane(hot), KeyedFair::<4>::lane(cold));
-    let lane = fair.admit(hot, nz(2)).expect("within budget");
-    assert_eq!(lane, KeyedFair::<4>::lane(hot));
+    let lane = KeyedFair::<4>::lane(hot);
+    assert_eq!(fair.admit(hot, nz(2)), Ok(lane));
     assert_eq!(fair.admit(hot, nz(1)), Err(Refusal::Insufficient));
     assert_eq!(
         (fair.in_flight(lane), fair.available(lane)),
@@ -23,7 +30,8 @@ fn a_lane_cannot_borrow_another_lanes_budget() {
 #[test]
 fn every_refusal_changes_nothing() {
     let mut fair = KeyedFair::<2>::new(nz(3));
-    let lane = fair.admit(7, nz(1)).expect("admitted");
+    let lane = KeyedFair::<2>::lane(7);
+    assert_eq!(fair.admit(7, nz(1)), Ok(lane));
     let foreign = KeyedFair::<8>::lane(u64::MAX);
     let before = fair.clone();
     assert_eq!(fair.admit(7, nz(3)), Err(Refusal::Insufficient));
@@ -42,19 +50,6 @@ fn every_refusal_changes_nothing() {
 }
 
 #[test]
-fn a_lane_is_a_bucket_not_an_issued_id() {
-    // Built without admitting anything, equal across instances and calls.
-    let mut fair = KeyedFair::<4>::new(nz(2));
-    let built = KeyedFair::<4>::lane_at(3).expect("in range");
-    assert_eq!(built, KeyedFair::<4>::lane(u64::MAX));
-    assert_eq!(fair.admit(u64::MAX, nz(1)), Ok(built));
-    assert_eq!(KeyedFair::<4>::new(nz(9)).admit(u64::MAX, nz(1)), Ok(built));
-    assert_eq!(fair.release(built, nz(1)), Ok(()));
-    assert_eq!(KeyedFair::<2>::lane_at(1).map(Lane::index), Some(1));
-    assert_eq!(KeyedFair::<2>::lane_at(2), None);
-}
-
-#[test]
 fn lanes_cover_the_hash_space_in_order() {
     assert_eq!(KeyedFair::<1>::lane(u64::MAX).index(), 0);
     let quarters = [0, 1 << 62, 1 << 63, u64::MAX].map(|h| KeyedFair::<4>::lane(h).index());
@@ -66,22 +61,15 @@ fn lanes_cover_the_hash_space_in_order() {
 #[test]
 fn random_runs_match_plain_counters_and_refusals_change_nothing() {
     const LANES: usize = 5;
-    let mut state = 0x2545_F491_4F6C_DD1D_u64;
-    let mut next = move || {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        state
-    };
+    let mut rng = Rng(0x2545_F491_4F6C_DD1D);
     let mut fair = KeyedFair::<LANES>::new(nz(6));
     let mut counters = [0_u32; LANES];
-    let mut refusals = [0_u32; 3];
+    let mut refusals = Refusals::default();
     for _ in 0..4000 {
         let before = fair.clone();
-        #[allow(clippy::cast_possible_truncation)]
-        let cost = 1 + (next() % 4) as u32;
-        let refused = if next() % 2 == 0 {
-            let hash = next();
+        let cost = 1 + rng.below(4);
+        let refused = if rng.below(2) == 0 {
+            let hash = rng.next();
             let lane = KeyedFair::<LANES>::lane(hash);
             let expected = if cost > 6 - counters[lane.index()] {
                 Err(Refusal::Insufficient)
@@ -93,7 +81,7 @@ fn random_runs_match_plain_counters_and_refusals_change_nothing() {
             assert_eq!(answer, expected);
             answer.err()
         } else {
-            let lane = KeyedFair::<8>::lane(next());
+            let lane = KeyedFair::<8>::lane(rng.next());
             let expected = match counters.get_mut(lane.index()) {
                 None => Err(Refusal::UnknownLane),
                 Some(counter) if cost > *counter => Err(Refusal::ExceedsInFlight),
@@ -106,19 +94,37 @@ fn random_runs_match_plain_counters_and_refusals_change_nothing() {
             assert_eq!(answer, expected);
             answer.err()
         };
-        if let Some(refusal) = refused {
-            assert_eq!(fair, before, "{refusal:?} changed the lanes");
-            refusals[match refusal {
-                Refusal::Insufficient => 0,
-                Refusal::ExceedsInFlight => 1,
-                Refusal::UnknownLane => 2,
-                Refusal::UnknownTenant => unreachable!("KeyedFair has no tenants"),
-            }] += 1;
-        }
+        refusals.record(refused, &fair, &before);
         for (index, counter) in counters.iter().enumerate() {
-            let lane = KeyedFair::<LANES>::lane_at(index).expect("in range");
-            assert_eq!(fair.in_flight(lane), Some(*counter));
+            assert_eq!(fair.in_flight(lane_at::<LANES>(index)), Some(*counter));
         }
     }
-    assert!(refusals.iter().all(|count| *count > 0), "{refusals:?}");
+    let Refusals {
+        unknown_tenant,
+        unknown_lane,
+        insufficient,
+        exceeds_in_flight,
+    } = refusals;
+    assert_eq!(unknown_tenant, 0, "KeyedFair has no tenants");
+    assert!(unknown_lane > 0 && insufficient > 0 && exceeds_in_flight > 0);
+}
+
+#[test]
+fn a_lane_is_a_bucket_not_an_issued_id() {
+    // Built without admitting anything, equal across instances, calls and
+    // constructors.
+    let built = lane_at::<4>(3);
+    assert_eq!(built, KeyedFair::<4>::lane(u64::MAX));
+    assert_eq!(built, Lane::new(3));
+    assert_eq!(Lane::new(usize::MAX).index(), usize::MAX);
+    assert_eq!(KeyedFair::<2>::lane_at(2), None);
+    let mut fair = KeyedFair::<4>::new(nz(2));
+    assert_eq!(fair.admit(u64::MAX, nz(1)), Ok(built));
+    assert_eq!(KeyedFair::<4>::new(nz(9)).admit(u64::MAX, nz(1)), Ok(built));
+    assert_eq!(fair.release(built, nz(1)), Ok(()));
+    // A position past the instance's lanes names nothing in it.
+    let before = fair.clone();
+    assert_eq!(fair.release(Lane::new(4), nz(1)), Err(Refusal::UnknownLane));
+    assert_eq!(fair, before);
+    assert_eq!(fair.in_flight(Lane::new(4)), None);
 }

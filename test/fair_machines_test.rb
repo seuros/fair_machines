@@ -78,7 +78,7 @@ class FairMachinesTest < Minitest::Test
     fair.admit(1, 1)
     assert_raises(TypeError) { fair.select([1, 1.5]) }
     assert_raises(RangeError) { fair.select([1, 0]) }
-    assert_raises(ArgumentError) { fair.select([1]) }
+    assert_raises(RangeError) { fair.select([1]) }
     assert_raises(TypeError) { fair.select(1) }
     assert_raises(TypeError) { fair.cancel(0, 1.2) }
     assert_raises(TypeError) { fair.admit('0', 1) }
@@ -90,9 +90,9 @@ class FairMachinesTest < Minitest::Test
 
   def test_strict_boundary
     [[], [1] * 17].each do |capacities|
-      assert_raises(ArgumentError) { TenantFair.new(capacities, [1] * capacities.size) }
+      assert_raises(RangeError) { TenantFair.new(capacities, [1] * capacities.size) }
     end
-    assert_raises(ArgumentError) { TenantFair.new([1], [1, 1]) }
+    assert_raises(RangeError) { TenantFair.new([1], [1, 1]) }
     assert_raises(ArgumentError) { TenantFair.new([1]) }
     assert_raises(TypeError) { TenantFair.new(1, [1]) }
     assert_raises(TypeError) { TenantFair.allocate }
@@ -108,6 +108,21 @@ class FairMachinesTest < Minitest::Test
     [-1, 2**64].each do |v|
       assert_raises(RangeError) { scheduler.admit(v, 1) }
       assert_raises(RangeError) { scheduler.in_flight(v) }
+    end
+  end
+
+  def test_messages_name_the_argument
+    {
+      -> { TenantFair.new([1.5], [1]) } => [TypeError, 'capacities must be Integers, not Float'],
+      -> { TenantFair.new([1], [0]) } => [RangeError, 'quanta must be in 1..=4294967295'],
+      -> { TenantFair.new([1] * 17, [1] * 17) } => [RangeError, 'capacities must hold 1..=16 tenants'],
+      -> { scheduler.admit('0', 1) } => [TypeError, 'tenant must be an Integer, not String'],
+      -> { scheduler.in_flight(2**64) } => [RangeError, "tenant must be in 0..=#{(2**64) - 1}"],
+      -> { scheduler.cancel(0, 0) } => [RangeError, 'cost must be in 1..=4294967295'],
+      -> { scheduler.select([1, 1.5]) } => [TypeError, 'heads must be Integers or nil, not Float'],
+      -> { scheduler.select([1]) } => [RangeError, 'heads must hold one entry per tenant: 1 given, 2 tenants']
+    }.each do |call, (error, message)|
+      assert_equal message, assert_raises(error, &call).message
     end
   end
 

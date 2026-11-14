@@ -1,11 +1,12 @@
 //! Exact const-generic tenant counts erased only for the host binding.
 
-use crate::{Index, Positive, arg_error, convert_all, done, refusal};
+use crate::{done, index, positive, positives, range_error, refusal};
 use fair_machines::{Refusal, TenantFair};
 use magnus::{Error, RArray, RModule, Ruby, Value, function, method, prelude::*, typed_data::Obj};
 use std::{cell::RefCell, num::NonZeroU32};
 
-/// Largest tenant count the binding instantiates; the core takes any `N`.
+/// Largest `N` compiled into the binding: `TenantFair<1>` to `TenantFair<16>`.
+/// The core takes any `N`; Ruby picks one of these by the arrays' length.
 const MAX_TENANTS: usize = 16;
 
 trait Tenants: Send {
@@ -38,23 +39,32 @@ impl<const N: usize> Tenants for TenantFair<N> {
     }
 }
 
+/// A core call that admits or returns one tenant's cost.
+type BudgetCall = fn(&mut Box<dyn Tenants>, usize, NonZeroU32) -> Result<(), Refusal>;
+
 #[magnus::wrap(class = "FairMachines::TenantFair", free_immediately, size)]
 struct Wrapper(RefCell<Box<dyn Tenants>>);
 
 impl Wrapper {
     fn new(ruby: &Ruby, capacities: RArray, quanta: RArray) -> Result<Self, Error> {
         if capacities.len() != quanta.len() {
-            return Err(arg_error(ruby, "capacities and quanta lengths must match"));
+            return Err(range_error(
+                ruby,
+                "capacities and quanta lengths must match",
+            ));
         }
-        let capacities = convert_all::<Positive>(capacities)?;
-        let quanta = convert_all::<Positive>(quanta)?;
+        let capacities = positives(capacities, "capacities")?;
+        let quanta = positives(quanta, "quanta")?;
         macro_rules! sized {
             ($($n:literal),*) => {
                 match capacities.len() {
                     $($n => Box::new(TenantFair::<$n>::new(
-                        std::array::from_fn(|i| capacities[i].0),
-                        std::array::from_fn(|i| quanta[i].0))) as Box<dyn Tenants>,)*
-                    _ => return Err(arg_error(ruby, "tenant count must be 1..16")),
+                        std::array::from_fn(|i| capacities[i]),
+                        std::array::from_fn(|i| quanta[i]))) as Box<dyn Tenants>,)*
+                    _ => return Err(range_error(
+                        ruby,
+                        format!("capacities must hold 1..={MAX_TENANTS} tenants"),
+                    )),
                 }
             };
         }
@@ -62,27 +72,54 @@ impl Wrapper {
         Ok(Self(RefCell::new(core)))
     }
 
-    fn admit(ruby: &Ruby, this: Obj<Self>, tenant: Index, cost: Positive) -> Result<Value, Error> {
-        this.check_frozen()?;
-        let answer = this.0.borrow_mut().admit(tenant.0, cost.0);
-        Ok(done(ruby, answer, "admitted"))
+    fn admit(ruby: &Ruby, this: Obj<Self>, tenant: Value, cost: Value) -> Result<Value, Error> {
+        Self::apply(
+            ruby,
+            this,
+            (tenant, cost),
+            |core, tenant, cost| core.admit(tenant, cost),
+            "admitted",
+        )
     }
 
-    fn cancel(ruby: &Ruby, this: Obj<Self>, tenant: Index, cost: Positive) -> Result<Value, Error> {
+    fn cancel(ruby: &Ruby, this: Obj<Self>, tenant: Value, cost: Value) -> Result<Value, Error> {
+        Self::apply(
+            ruby,
+            this,
+            (tenant, cost),
+            |core, tenant, cost| core.cancel(tenant, cost),
+            "cancelled",
+        )
+    }
+
+    /// Check and convert everything that can raise, then call the core once.
+    fn apply(
+        ruby: &Ruby,
+        this: Obj<Self>,
+        (tenant, cost): (Value, Value),
+        operation: BudgetCall,
+        honoured: &str,
+    ) -> Result<Value, Error> {
         this.check_frozen()?;
-        let answer = this.0.borrow_mut().cancel(tenant.0, cost.0);
-        Ok(done(ruby, answer, "cancelled"))
+        let tenant = index(tenant, "tenant")?;
+        let cost = positive(cost, "cost")?;
+        let answer = operation(&mut this.0.borrow_mut(), tenant, cost);
+        Ok(done(ruby, answer, honoured))
     }
 
     fn select(ruby: &Ruby, this: Obj<Self>, heads: RArray) -> Result<Option<Value>, Error> {
         this.check_frozen()?;
-        if heads.len() != this.0.borrow().tenant_count() {
-            return Err(arg_error(ruby, "heads length must match tenant count"));
+        let tenants = this.0.borrow().tenant_count();
+        if heads.len() != tenants {
+            return Err(range_error(
+                ruby,
+                format!(
+                    "heads must hold one entry per tenant: {} given, {tenants} tenants",
+                    heads.len()
+                ),
+            ));
         }
-        let heads: Vec<_> = convert_all::<Option<Positive>>(heads)?
-            .into_iter()
-            .map(|head| head.map(|Positive(cost)| cost))
-            .collect();
+        let heads = crate::heads(heads)?;
         let answer = this.0.borrow_mut().select(&heads);
         Ok(match answer {
             Ok(tenant) => tenant.map(|tenant| ruby.integer_from_u64(tenant as u64).as_value()),
@@ -94,12 +131,12 @@ impl Wrapper {
         self.0.borrow().tenant_count()
     }
 
-    fn in_flight(&self, tenant: Index) -> Option<u32> {
-        self.0.borrow().in_flight(tenant.0)
+    fn in_flight(&self, tenant: Value) -> Result<Option<u32>, Error> {
+        Ok(self.0.borrow().in_flight(index(tenant, "tenant")?))
     }
 
-    fn available(&self, tenant: Index) -> Option<u32> {
-        self.0.borrow().available(tenant.0)
+    fn available(&self, tenant: Value) -> Result<Option<u32>, Error> {
+        Ok(self.0.borrow().available(index(tenant, "tenant")?))
     }
 }
 
