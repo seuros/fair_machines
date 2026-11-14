@@ -122,6 +122,7 @@ class FairMachinesTest < Minitest::Test
       -> { scheduler.in_flight(2**64) } => [RangeError, "tenant must be in 0..=#{(2**64) - 1}"],
       -> { scheduler.cancel(0, 0) } => [RangeError, 'cost must be in 1..=4294967295'],
       -> { scheduler.select([1, 1.5]) } => [TypeError, 'heads must be an Integer'],
+      -> { scheduler.select([nil, 0]) } => [RangeError, 'heads must be in 1..=4294967295'],
       -> { scheduler.select([1]) } => [RangeError, 'heads must hold one entry per tenant: 1 given, 2 tenants']
     }.each do |call, (error, message)|
       assert_equal message, assert_raises(error, &call).message

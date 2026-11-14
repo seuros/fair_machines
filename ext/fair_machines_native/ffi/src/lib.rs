@@ -6,7 +6,7 @@ mod tenants;
 
 use fair_machines::Refusal;
 use magnus::{Error, RArray, Ruby, Value, prelude::*};
-use matryona_machines::ruby::{Symbols, positive, symbol};
+use matryona_machines::ruby::{Symbols, optional_positive, positive, symbol};
 use std::num::NonZeroU32;
 
 matryona_machines::symbols! {
@@ -49,12 +49,6 @@ pub(crate) fn positives(values: RArray, name: &str) -> Result<Vec<NonZeroU32>, E
 pub(crate) fn heads(values: RArray) -> Result<Vec<Option<NonZeroU32>>, Error> {
     values
         .into_iter()
-        .map(|value| {
-            if value.is_nil() {
-                Ok(None)
-            } else {
-                positive(value, "heads").map(Some)
-            }
-        })
+        .map(|value| optional_positive(value, "heads"))
         .collect()
 }

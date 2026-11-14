@@ -3,7 +3,7 @@
 use crate::{done, range_error, refusal};
 use fair_machines::{KeyedFair, Lane, Refusal};
 use magnus::{Error, RModule, Ruby, Value, function, method, prelude::*, typed_data::Obj};
-use matryona_machines::ruby::{Class, Registry, exact_fields, integer, keep, positive};
+use matryona_machines::ruby::{Class, Registry, exact_fields, integer, integer_in, keep, positive};
 use std::{any::Any, cell::RefCell, num::NonZeroU32};
 
 /// The `Data` class the binding builds and reads, resolved once at init.
@@ -78,7 +78,7 @@ impl<const N: usize> Lanes for KeyedFair<N> {
 
 /// The shape of `KeyedFair<lanes>`, or `RangeError` outside `1..=256`.
 fn shape(ruby: &Ruby, lanes: Value) -> Result<Shape, Error> {
-    let lanes: usize = integer(lanes, "lanes")?;
+    let lanes = integer_in(lanes, "lanes", 1..=MAX_LANES)?;
     macro_rules! sized {
         ($($n:literal),*) => {
             match lanes {

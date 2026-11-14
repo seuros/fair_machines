@@ -96,6 +96,8 @@ class KeyedFairTest < Minitest::Test
     fair = KeyedFair.new(4, 2)
     {
       -> { KeyedFair.new(0, 1) } => [RangeError, 'lanes must be in 1..=256'],
+      -> { KeyedFair.new(-1, 1) } => [RangeError, 'lanes must be in 1..=256'],
+      -> { KeyedFair.lane(2**64, 0) } => [RangeError, 'lanes must be in 1..=256'],
       -> { KeyedFair.new(4, nil) } => [TypeError, 'capacity must be an Integer'],
       -> { KeyedFair.lane(4, -1) } => [RangeError, "hash must be in 0..=#{LAST}"],
       -> { KeyedFair.lane_at(4, 1.5) } => [TypeError, 'index must be an Integer'],
