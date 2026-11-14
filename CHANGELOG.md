@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/seuros/fair_machines/compare/fair_machines/v0.5.0...fair_machines/v0.5.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **deps:** require matryona-machines &gt;= 0.4 ([04666de](https://github.com/seuros/fair_machines/commit/04666de21538f824df21f6012e2cbbeca419bafe))
+
 ## [0.5.0](https://github.com/seuros/fair_machines/compare/fair_machines/v0.4.0...fair_machines/v0.5.0) (2026-11-14)
 
 
