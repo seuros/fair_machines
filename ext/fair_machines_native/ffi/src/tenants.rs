@@ -1,8 +1,9 @@
 //! Exact const-generic tenant counts erased only for the host binding.
 
-use crate::{done, index, positive, positives, range_error, refusal};
+use crate::{done, positives, range_error, refusal};
 use fair_machines::{Refusal, TenantFair};
-use magnus::{Error, RArray, RModule, Ruby, Value, function, method, prelude::*, typed_data::Obj};
+use magnus::{Error, RModule, Ruby, Value, function, method, prelude::*, typed_data::Obj};
+use matryona_machines::ruby::{exact_array, integer, positive};
 use std::{cell::RefCell, num::NonZeroU32};
 
 /// Largest `N` compiled into the binding: `TenantFair<1>` to `TenantFair<16>`.
@@ -46,7 +47,9 @@ type BudgetCall = fn(&mut Box<dyn Tenants>, usize, NonZeroU32) -> Result<(), Ref
 struct Wrapper(RefCell<Box<dyn Tenants>>);
 
 impl Wrapper {
-    fn new(ruby: &Ruby, capacities: RArray, quanta: RArray) -> Result<Self, Error> {
+    fn new(ruby: &Ruby, capacities: Value, quanta: Value) -> Result<Self, Error> {
+        let capacities = exact_array(ruby, capacities, "capacities must be an Array")?;
+        let quanta = exact_array(ruby, quanta, "quanta must be an Array")?;
         if capacities.len() != quanta.len() {
             return Err(range_error(
                 ruby,
@@ -101,14 +104,15 @@ impl Wrapper {
         honoured: &str,
     ) -> Result<Value, Error> {
         this.check_frozen()?;
-        let tenant = index(tenant, "tenant")?;
+        let tenant = integer(tenant, "tenant")?;
         let cost = positive(cost, "cost")?;
         let answer = operation(&mut this.0.borrow_mut(), tenant, cost);
         Ok(done(ruby, answer, honoured))
     }
 
-    fn select(ruby: &Ruby, this: Obj<Self>, heads: RArray) -> Result<Option<Value>, Error> {
+    fn select(ruby: &Ruby, this: Obj<Self>, heads: Value) -> Result<Option<Value>, Error> {
         this.check_frozen()?;
+        let heads = exact_array(ruby, heads, "heads must be an Array")?;
         let tenants = this.0.borrow().tenant_count();
         if heads.len() != tenants {
             return Err(range_error(
@@ -132,11 +136,11 @@ impl Wrapper {
     }
 
     fn in_flight(&self, tenant: Value) -> Result<Option<u32>, Error> {
-        Ok(self.0.borrow().in_flight(index(tenant, "tenant")?))
+        Ok(self.0.borrow().in_flight(integer(tenant, "tenant")?))
     }
 
     fn available(&self, tenant: Value) -> Result<Option<u32>, Error> {
-        Ok(self.0.borrow().available(index(tenant, "tenant")?))
+        Ok(self.0.borrow().available(integer(tenant, "tenant")?))
     }
 }
 

@@ -96,9 +96,9 @@ class KeyedFairTest < Minitest::Test
     fair = KeyedFair.new(4, 2)
     {
       -> { KeyedFair.new(0, 1) } => [RangeError, 'lanes must be in 1..=256'],
-      -> { KeyedFair.new(4, nil) } => [TypeError, 'capacity must be an Integer, not NilClass'],
+      -> { KeyedFair.new(4, nil) } => [TypeError, 'capacity must be an Integer'],
       -> { KeyedFair.lane(4, -1) } => [RangeError, "hash must be in 0..=#{LAST}"],
-      -> { KeyedFair.lane_at(4, 1.5) } => [TypeError, 'index must be an Integer, not Float'],
+      -> { KeyedFair.lane_at(4, 1.5) } => [TypeError, 'index must be an Integer'],
       -> { fair.admit(0, 0) } => [RangeError, 'cost must be in 1..=4294967295'],
       -> { fair.release(0, 1) } => [TypeError, 'lane must be a FairMachines::Lane'],
       -> { Lane.new(-1) } => [RangeError, "index must be in 0..=#{LAST}"]
@@ -173,6 +173,9 @@ class KeyedFairTest < Minitest::Test
     fair = KeyedFair.new(2, 1).freeze
     assert_raises(FrozenError) { fair.admit(0, 1) }
     assert_raises(FrozenError) { fair.release(Lane.new(0), 1) }
+    # Frozen is checked first, before the arguments are read.
+    assert_raises(FrozenError) { fair.admit(-1, 0) }
+    assert_raises(FrozenError) { fair.release(0, nil) }
     assert_equal [2, 0, 1], [fair.lane_count, fair.in_flight(Lane.new(0)), fair.available(Lane.new(0))]
   end
 end

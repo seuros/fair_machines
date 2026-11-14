@@ -1,5 +1,6 @@
 use super::*;
-use crate::test_support::{Refusals, Rng, nz};
+use crate::test_support::{Refusals, below, nz};
+use matryona_machines::testing::{XorShift64, refuses};
 
 /// The lane at `index` of a `KeyedFair<LANES>`, which must have it.
 fn lane_at<const LANES: usize>(index: usize) -> Lane {
@@ -33,20 +34,22 @@ fn every_refusal_changes_nothing() {
     let lane = KeyedFair::<2>::lane(7);
     assert_eq!(fair.admit(7, nz(1)), Ok(lane));
     let foreign = KeyedFair::<8>::lane(u64::MAX);
-    let before = fair.clone();
-    assert_eq!(fair.admit(7, nz(3)), Err(Refusal::Insufficient));
-    assert_eq!(fair.release(lane, nz(2)), Err(Refusal::ExceedsInFlight));
-    assert_eq!(fair.release(foreign, nz(1)), Err(Refusal::UnknownLane));
-    assert_eq!(fair, before);
+    refuses(&mut fair, Refusal::Insufficient, |f| f.admit(7, nz(3)));
+    refuses(&mut fair, Refusal::ExceedsInFlight, |f| {
+        f.release(lane, nz(2))
+    });
+    refuses(&mut fair, Refusal::UnknownLane, |f| {
+        f.release(foreign, nz(1))
+    });
     assert_eq!(
         (fair.in_flight(foreign), fair.available(foreign)),
         (None, None)
     );
     // Lanes count cost, not work: a repeat is honoured only while cost remains.
     assert_eq!(fair.release(lane, nz(1)), Ok(()));
-    let before = fair.clone();
-    assert_eq!(fair.release(lane, nz(1)), Err(Refusal::ExceedsInFlight));
-    assert_eq!(fair, before);
+    refuses(&mut fair, Refusal::ExceedsInFlight, |f| {
+        f.release(lane, nz(1))
+    });
 }
 
 #[test]
@@ -61,15 +64,15 @@ fn lanes_cover_the_hash_space_in_order() {
 #[test]
 fn random_runs_match_plain_counters_and_refusals_change_nothing() {
     const LANES: usize = 5;
-    let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+    let mut rng = XorShift64::new(0x2545_F491_4F6C_DD1D);
     let mut fair = KeyedFair::<LANES>::new(nz(6));
     let mut counters = [0_u32; LANES];
     let mut refusals = Refusals::default();
     for _ in 0..4000 {
         let before = fair.clone();
-        let cost = 1 + rng.below(4);
-        let refused = if rng.below(2) == 0 {
-            let hash = rng.next();
+        let cost = 1 + below(&mut rng, 4);
+        let refused = if below(&mut rng, 2) == 0 {
+            let hash = rng.next_u64();
             let lane = KeyedFair::<LANES>::lane(hash);
             let expected = if cost > 6 - counters[lane.index()] {
                 Err(Refusal::Insufficient)
@@ -81,7 +84,7 @@ fn random_runs_match_plain_counters_and_refusals_change_nothing() {
             assert_eq!(answer, expected);
             answer.err()
         } else {
-            let lane = KeyedFair::<8>::lane(rng.next());
+            let lane = KeyedFair::<8>::lane(rng.next_u64());
             let expected = match counters.get_mut(lane.index()) {
                 None => Err(Refusal::UnknownLane),
                 Some(counter) if cost > *counter => Err(Refusal::ExceedsInFlight),
@@ -123,8 +126,8 @@ fn a_lane_is_a_bucket_not_an_issued_id() {
     assert_eq!(KeyedFair::<4>::new(nz(9)).admit(u64::MAX, nz(1)), Ok(built));
     assert_eq!(fair.release(built, nz(1)), Ok(()));
     // A position past the instance's lanes names nothing in it.
-    let before = fair.clone();
-    assert_eq!(fair.release(Lane::new(4), nz(1)), Err(Refusal::UnknownLane));
-    assert_eq!(fair, before);
+    refuses(&mut fair, Refusal::UnknownLane, |f| {
+        f.release(Lane::new(4), nz(1))
+    });
     assert_eq!(fair.in_flight(Lane::new(4)), None);
 }

@@ -1,6 +1,7 @@
 //! Randomized run against a plain reference model.
 use super::*;
-use crate::test_support::{Refusals, Rng};
+use crate::test_support::{Refusals, below, index};
+use matryona_machines::testing::XorShift64;
 use priority_machines::DeficitRoundRobin;
 
 const N: usize = 3;
@@ -56,9 +57,9 @@ impl Model {
 }
 
 fn run(seed: u64, refusals: &mut Refusals, drains: &mut u32) {
-    let mut rng = Rng(seed);
-    let capacities: [u32; N] = core::array::from_fn(|_| 1 + rng.below(12));
-    let quanta: [u32; N] = core::array::from_fn(|_| 1 + rng.below(5));
+    let mut rng = XorShift64::new(seed);
+    let capacities: [u32; N] = core::array::from_fn(|_| 1 + below(&mut rng, 12));
+    let quanta: [u32; N] = core::array::from_fn(|_| 1 + below(&mut rng, 5));
     let mut fair = TenantFair::new(capacities.map(nz), quanta.map(nz));
     let mut model = Model {
         capacities,
@@ -67,9 +68,9 @@ fn run(seed: u64, refusals: &mut Refusals, drains: &mut u32) {
     };
     for _ in 0..300 {
         let before = fair.clone();
-        let tenant = rng.index(4); // 0..=N: one past the end
-        let cost = 1 + rng.below(8);
-        let refused = match rng.below(4) {
+        let tenant = index(&mut rng, 4); // 0..=N: one past the end
+        let cost = 1 + below(&mut rng, 8);
+        let refused = match below(&mut rng, 4) {
             0 | 1 => {
                 let answer = fair.admit(tenant, nz(cost));
                 assert_eq!(answer, model.admit(tenant, cost));
@@ -83,12 +84,12 @@ fn run(seed: u64, refusals: &mut Refusals, drains: &mut u32) {
             _ => {
                 // Mostly truthful heads; one draw in four may lie.
                 let heads: [_; N] = core::array::from_fn(|i| {
-                    let limit = if rng.below(4) == 0 {
+                    let limit = if below(&mut rng, 4) == 0 {
                         9
                     } else {
                         model.queued[i]
                     };
-                    NonZeroU32::new(rng.below(limit + 1))
+                    NonZeroU32::new(below(&mut rng, limit + 1))
                 });
                 let answer = fair.select(&heads);
                 assert_eq!(answer, model.select(&heads));

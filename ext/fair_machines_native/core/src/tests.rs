@@ -1,5 +1,6 @@
 use super::*;
 use crate::test_support::nz;
+use matryona_machines::testing::refuses;
 
 mod model;
 
@@ -33,22 +34,24 @@ fn every_refusal_changes_nothing() {
     assert_eq!(fair.admit(1, nz(2)), Ok(()));
     // Mid-rotation: a paid visit and a moved cursor are part of the value.
     assert_eq!(fair.select(&heads([1, 1])), Ok(Some(0)));
-    let before = fair.clone();
-    assert_eq!(fair.admit(0, nz(2)), Err(Refusal::Insufficient));
-    assert_eq!(fair.admit(9, nz(1)), Err(Refusal::UnknownTenant));
-    assert_eq!(fair.cancel(1, nz(3)), Err(Refusal::ExceedsInFlight));
-    assert_eq!(fair.cancel(9, nz(1)), Err(Refusal::UnknownTenant));
+    refuses(&mut fair, Refusal::Insufficient, |f| f.admit(0, nz(2)));
+    refuses(&mut fair, Refusal::UnknownTenant, |f| f.admit(9, nz(1)));
+    refuses(&mut fair, Refusal::ExceedsInFlight, |f| f.cancel(1, nz(3)));
+    refuses(&mut fair, Refusal::UnknownTenant, |f| f.cancel(9, nz(1)));
     // A head costing more than its tenant admitted refuses the whole round.
-    assert_eq!(fair.select(&heads([4, 1])), Err(Refusal::ExceedsInFlight));
-    assert_eq!(fair.select(&heads([0, 3])), Err(Refusal::ExceedsInFlight));
-    assert_eq!(fair, before);
+    refuses(&mut fair, Refusal::ExceedsInFlight, |f| {
+        f.select(&heads([4, 1]))
+    });
+    refuses(&mut fair, Refusal::ExceedsInFlight, |f| {
+        f.select(&heads([0, 3]))
+    });
 
     // A tenant that admitted nothing cannot present a head at all.
     let mut fair = TenantFair::new([nz(5), nz(5)], [nz(1); 2]);
     assert_eq!(fair.admit(1, nz(1)), Ok(()));
-    let before = fair.clone();
-    assert_eq!(fair.select(&heads([1, 1])), Err(Refusal::ExceedsInFlight));
-    assert_eq!(fair, before);
+    refuses(&mut fair, Refusal::ExceedsInFlight, |f| {
+        f.select(&heads([1, 1]))
+    });
     assert_eq!(fair.select(&heads([0, 1])), Ok(Some(1)));
     assert_eq!(fair.in_flight(1), Some(0));
 }

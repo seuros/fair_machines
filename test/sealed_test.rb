@@ -52,6 +52,34 @@ class SealedTest < Minitest::Test
   def test_a_lane_with_a_singleton_class_is_still_a_lane
     lane = Lane.new(2)
     lane.singleton_class
-    assert_equal 0, KeyedFair.new(4, 2).in_flight(lane)
+    fair = KeyedFair.new(4, 2)
+    assert_equal 0, fair.in_flight(lane)
+    assert_equal 0, fair.in_flight(lane.clone)
+    assert_equal Lane.new(2), fair.admit(2**63, 1)
+    assert_equal :released, fair.release(lane.clone, 1)
+  end
+
+  def test_a_redefined_reader_is_ignored
+    fair = KeyedFair.new(4, 2)
+    lane = fair.admit(0, 1)
+    with_raising_readers(Lane) do
+      assert_equal 1, fair.in_flight(lane)
+      assert_equal :released, fair.release(lane, 1)
+      assert_equal 0, fair.in_flight(lane)
+    end
+  end
+
+  # Every reader of `classes` raises while the block runs.
+  def with_raising_readers(*classes)
+    saved = classes.flat_map { |klass| klass.members.map { |name| [klass, name, klass.instance_method(name)] } }
+    verbose = $VERBOSE
+    $VERBOSE = nil
+    saved.each { |klass, name, _| klass.define_method(name) { raise 'the binding ran a reader' } }
+    $VERBOSE = verbose
+    yield
+  ensure
+    $VERBOSE = nil
+    saved.each { |klass, name, method| klass.define_method(name, method) }
+    $VERBOSE = verbose
   end
 end

@@ -113,13 +113,15 @@ class FairMachinesTest < Minitest::Test
 
   def test_messages_name_the_argument
     {
-      -> { TenantFair.new([1.5], [1]) } => [TypeError, 'capacities must be Integers, not Float'],
+      -> { TenantFair.new([1.5], [1]) } => [TypeError, 'capacities must be an Integer'],
       -> { TenantFair.new([1], [0]) } => [RangeError, 'quanta must be in 1..=4294967295'],
+      -> { TenantFair.new([1], Class.new(Array).new([1])) } => [TypeError, 'quanta must be an Array'],
+      -> { scheduler.select(Class.new(Array).new([1, 1])) } => [TypeError, 'heads must be an Array'],
       -> { TenantFair.new([1] * 17, [1] * 17) } => [RangeError, 'capacities must hold 1..=16 tenants'],
-      -> { scheduler.admit('0', 1) } => [TypeError, 'tenant must be an Integer, not String'],
+      -> { scheduler.admit('0', 1) } => [TypeError, 'tenant must be an Integer'],
       -> { scheduler.in_flight(2**64) } => [RangeError, "tenant must be in 0..=#{(2**64) - 1}"],
       -> { scheduler.cancel(0, 0) } => [RangeError, 'cost must be in 1..=4294967295'],
-      -> { scheduler.select([1, 1.5]) } => [TypeError, 'heads must be Integers or nil, not Float'],
+      -> { scheduler.select([1, 1.5]) } => [TypeError, 'heads must be an Integer'],
       -> { scheduler.select([1]) } => [RangeError, 'heads must hold one entry per tenant: 1 given, 2 tenants']
     }.each do |call, (error, message)|
       assert_equal message, assert_raises(error, &call).message
@@ -137,6 +139,9 @@ class FairMachinesTest < Minitest::Test
     assert_raises(FrozenError) { fair.admit(0, 1) }
     assert_raises(FrozenError) { fair.cancel(0, 1) }
     assert_raises(FrozenError) { fair.select([nil, nil]) }
+    # Frozen is checked first, before the arguments are read.
+    assert_raises(FrozenError) { fair.admit('0', 1.5) }
+    assert_raises(FrozenError) { fair.select(:nope) }
     assert_equal 2, fair.tenant_count
     assert_equal [[0, 20], [0, 20]], snapshot(fair)
   end
