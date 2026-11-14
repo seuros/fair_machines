@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0](https://github.com/seuros/fair_machines/compare/fair_machines/v0.4.0...fair_machines/v0.5.0) (2026-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* adopt matryona-machines 0.3 (optional_positive heads, integer_in lanes)
+
+### Features
+
+* adopt matryona-machines 0.3 (optional_positive heads, integer_in lanes) ([fd6b0cf](https://github.com/seuros/fair_machines/commit/fd6b0cf9ff26bb52d4a8606a0bc4cc7bf27a5be6))
+
 ## [0.4.0](https://github.com/seuros/fair_machines/compare/fair_machines/v0.3.0...fair_machines/v0.4.0) (2026-11-14)
 
 
