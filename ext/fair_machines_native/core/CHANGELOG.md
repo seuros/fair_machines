@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.0](https://github.com/seuros/fair_machines/compare/fair-machines-v0.5.0...fair-machines-v0.6.0) (2026-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* build the binding on matryona-machines 0.2; compiler-checked refusal symbols; read Lane fields from the struct; ship no test files
+
+### Features
+
+* build the binding on matryona-machines 0.2; compiler-checked refusal symbols; read Lane fields from the struct; ship no test files ([9e05fa0](https://github.com/seuros/fair_machines/commit/9e05fa06ec652a0693d0d83f4fd5c5e63fc96f31))
+
 ## [0.5.0](https://github.com/seuros/fair_machines/compare/fair-machines-v0.4.0...fair-machines-v0.5.0) (2026-11-14)
 
 
