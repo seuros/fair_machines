@@ -210,5 +210,8 @@ pub fn define(ruby: &Ruby, module: RModule) -> Result<(), Error> {
     class.define_method("release", method!(Wrapper::release, 2))?;
     class.define_method("lane_count", method!(Wrapper::lane_count, 0))?;
     class.define_method("in_flight", method!(Wrapper::in_flight, 1))?;
-    class.define_method("available", method!(Wrapper::available, 1))
+    class.define_method("available", method!(Wrapper::available, 1))?;
+    // `new` answers a KeyedFair: its class is fixed now, so building one
+    // never runs `Object.const_get`.
+    Class::pin_wrapped::<Wrapper>(ruby, class).map(drop)
 }

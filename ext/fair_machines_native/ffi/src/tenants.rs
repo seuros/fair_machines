@@ -3,7 +3,7 @@
 use crate::{done, positives, range_error, refusal};
 use fair_machines::{Refusal, TenantFair};
 use magnus::{Error, RModule, Ruby, Value, function, method, prelude::*, typed_data::Obj};
-use matryona_machines::ruby::{exact_array, integer, positive, sized};
+use matryona_machines::ruby::{Class, exact_array, integer, positive, sized};
 use std::{cell::RefCell, num::NonZeroU32};
 
 /// Largest `N` compiled into the binding: `TenantFair<1>` to `TenantFair<16>`.
@@ -154,5 +154,8 @@ pub fn define(ruby: &Ruby, module: RModule) -> Result<(), Error> {
     class.define_method("select", method!(Wrapper::select, 1))?;
     class.define_method("tenant_count", method!(Wrapper::tenant_count, 0))?;
     class.define_method("in_flight", method!(Wrapper::in_flight, 1))?;
-    class.define_method("available", method!(Wrapper::available, 1))
+    class.define_method("available", method!(Wrapper::available, 1))?;
+    // `new` answers a TenantFair: its class is fixed now, so building one
+    // never runs `Object.const_get`.
+    Class::pin_wrapped::<Wrapper>(ruby, class).map(drop)
 }
