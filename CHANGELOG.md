@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/seuros/fair_machines/compare/fair_machines/v0.6.0...fair_machines/v0.6.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* fix wrapped classes at load so building a value runs no Ruby ([eb9ca70](https://github.com/seuros/fair_machines/commit/eb9ca70c43f9165eacdcfb00d54a482d303ee07b))
+
 ## [0.6.0](https://github.com/seuros/fair_machines/compare/fair_machines/v0.5.1...fair_machines/v0.6.0) (2026-11-16)
 
 
