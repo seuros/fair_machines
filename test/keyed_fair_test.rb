@@ -62,7 +62,9 @@ class KeyedFairTest < Minitest::Test
   end
 
   def test_hashes_are_unsigned
-    fair = KeyedFair.new(256, 1)
+    # Capacity 2: both hashes may land in one lane (Ruby seeds `hash` per
+    # process), and the second admit must not be refused :insufficient.
+    fair = KeyedFair.new(256, 2)
     [:org.hash, 'org'.hash].each do |hash|
       assert_operator fair.admit(hash & LAST, 1).index, :<, 256
     end

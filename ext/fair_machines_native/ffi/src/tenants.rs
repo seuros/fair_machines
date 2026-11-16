@@ -3,7 +3,7 @@
 use crate::{done, positives, range_error, refusal};
 use fair_machines::{Refusal, TenantFair};
 use magnus::{Error, RModule, Ruby, Value, function, method, prelude::*, typed_data::Obj};
-use matryona_machines::ruby::{exact_array, integer, positive};
+use matryona_machines::ruby::{exact_array, integer, positive, sized};
 use std::{cell::RefCell, num::NonZeroU32};
 
 /// Largest `N` compiled into the binding: `TenantFair<1>` to `TenantFair<16>`.
@@ -58,20 +58,20 @@ impl Wrapper {
         }
         let capacities = positives(capacities, "capacities")?;
         let quanta = positives(quanta, "quanta")?;
-        macro_rules! sized {
-            ($($n:literal),*) => {
-                match capacities.len() {
-                    $($n => Box::new(TenantFair::<$n>::new(
-                        std::array::from_fn(|i| capacities[i]),
-                        std::array::from_fn(|i| quanta[i]))) as Box<dyn Tenants>,)*
-                    _ => return Err(range_error(
-                        ruby,
-                        format!("capacities must hold 1..={MAX_TENANTS} tenants"),
-                    )),
-                }
-            };
-        }
-        let core = sized!(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);
+        let core = sized!(
+            capacities.len(),
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            |N| Box::new(TenantFair::<N>::new(
+                std::array::from_fn(|i| capacities[i]),
+                std::array::from_fn(|i| quanta[i]),
+            )) as Box<dyn Tenants>,
+            _ => {
+                return Err(range_error(
+                    ruby,
+                    format!("capacities must hold 1..={MAX_TENANTS} tenants"),
+                ));
+            },
+        );
         Ok(Self(RefCell::new(core)))
     }
 

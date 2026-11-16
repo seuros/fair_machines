@@ -56,8 +56,10 @@ impl<const LANES: usize> KeyedFair<LANES> {
     /// The lane `hash` maps to: the hash space cut into `LANES` equal,
     /// ordered ranges. A pure function; no instance is involved.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_truncation, clippy::arithmetic_side_effects)]
     pub const fn lane(hash: u64) -> Lane {
+        // Both factors are below 2^64, so the product is below 2^128 and
+        // cannot overflow; shifted down it is below `LANES`, so it fits.
         Lane(((hash as u128 * LANES as u128) >> 64) as usize)
     }
 
@@ -79,7 +81,12 @@ impl<const LANES: usize> KeyedFair<LANES> {
     /// budget: there is no partial admission and nothing changed.
     pub const fn admit(&mut self, hash: u64, cost: NonZeroU32) -> Result<Lane, Refusal> {
         let lane = Self::lane(hash);
-        match self.lanes[lane.0].try_acquire(cost) {
+        // In bounds by construction: `lane` answers below `LANES` for every
+        // hash. Kept as an index because `admit` is `const` and slice `get`
+        // is not.
+        #[allow(clippy::indexing_slicing)]
+        let window = &mut self.lanes[lane.0];
+        match window.try_acquire(cost) {
             Ok(()) => Ok(lane),
             Err(refusal) => Err(Refusal::from_flow(refusal)),
         }

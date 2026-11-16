@@ -3,7 +3,9 @@
 use crate::{done, range_error, refusal};
 use fair_machines::{KeyedFair, Lane, Refusal};
 use magnus::{Error, RModule, Ruby, Value, function, method, prelude::*, typed_data::Obj};
-use matryona_machines::ruby::{Class, Registry, exact_fields, integer, integer_in, keep, positive};
+use matryona_machines::ruby::{
+    Class, Registry, exact_fields, integer, integer_in, keep, positive, sized,
+};
 use std::{any::Any, cell::RefCell, num::NonZeroU32};
 
 /// The `Data` class the binding builds and reads, resolved once at init.
@@ -79,20 +81,10 @@ impl<const N: usize> Lanes for KeyedFair<N> {
 /// The shape of `KeyedFair<lanes>`, or `RangeError` outside `1..=256`.
 fn shape(ruby: &Ruby, lanes: Value) -> Result<Shape, Error> {
     let lanes = integer_in(lanes, "lanes", 1..=MAX_LANES)?;
-    macro_rules! sized {
-        ($($n:literal),*) => {
-            match lanes {
-                $($n => Shape {
-                    lane: |hash| KeyedFair::<$n>::lane(hash).index(),
-                    lane_at: |index| KeyedFair::<$n>::lane_at(index).map(Lane::index),
-                    build: |capacity| Box::new(KeyedFair::<$n>::new(capacity)),
-                },)*
-                _ => return Err(range_error(ruby, format!("lanes must be in 1..={MAX_LANES}"))),
-            }
-        };
-    }
     #[rustfmt::skip]
     let shape = sized!(
+        lanes,
+        [
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
             25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46,
             47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68,
@@ -107,6 +99,13 @@ fn shape(ruby: &Ruby, lanes: Value) -> Result<Shape, Error> {
             212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228,
             229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245,
             246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 256
+        ],
+        |N| Shape {
+            lane: |hash| KeyedFair::<N>::lane(hash).index(),
+            lane_at: |index| KeyedFair::<N>::lane_at(index).map(Lane::index),
+            build: |capacity| Box::new(KeyedFair::<N>::new(capacity)),
+        },
+        _ => return Err(range_error(ruby, format!("lanes must be in 1..={MAX_LANES}"))),
     );
     Ok(shape)
 }

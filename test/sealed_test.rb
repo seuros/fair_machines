@@ -8,6 +8,7 @@ require 'fair_machines'
 class SealedTest < Minitest::Test
   Lane = FairMachines::Lane
   KeyedFair = FairMachines::KeyedFair
+  TenantFair = FairMachines::TenantFair
 
   # A named subclass raises, but Ruby binds the constant before `inherited`
   # runs, so `ForgedLane` leaks; reopened, it skips Lane's validation.
@@ -26,6 +27,14 @@ class SealedTest < Minitest::Test
     assert_raises(TypeError) { Class.new(Lane) }
     assert_kind_of TypeError, NAMED_SUBCLASS_ERROR
     assert_equal Lane, ForgedLane.superclass, 'the constant leaks'
+  end
+
+  def test_schedulers_are_sealed
+    [TenantFair, KeyedFair].each do |scheduler|
+      assert_raises(TypeError) { scheduler.allocate }
+      error = assert_raises(TypeError) { Class.new(scheduler) }
+      assert_equal "#{scheduler} cannot be subclassed", error.message
+    end
   end
 
   def test_a_forged_lane_never_reaches_the_core

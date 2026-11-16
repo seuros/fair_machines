@@ -1,6 +1,6 @@
 use super::*;
 use crate::test_support::nz;
-use matryona_machines::testing::refuses;
+use matryona_machines::testing::{describes, refuses};
 
 mod model;
 
@@ -85,10 +85,7 @@ fn a_drained_tenant_loses_its_saved_credit() {
 
 #[test]
 fn refusals_describe_themselves() {
-    extern crate std;
-    use std::string::ToString;
-
-    let cases = [
+    describes(&[
         (
             Refusal::UnknownTenant,
             "tenant index is not one of the scheduler's tenants",
@@ -105,10 +102,7 @@ fn refusals_describe_themselves() {
             Refusal::ExceedsInFlight,
             "more cost returned than the budget has admitted",
         ),
-    ];
-    for (refusal, text) in cases {
-        assert_eq!(refusal.to_string(), text);
-    }
+    ]);
 }
 
 #[test]

@@ -1,8 +1,9 @@
 #![no_std]
 #![doc = include_str!("../README.md")]
+#![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 use core::num::NonZeroU32;
 use flow_machines::CreditWindow;
-use priority_machines::{Deactivation, DeficitRoundRobin};
+use priority_machines::{Deactivation, DeficitRoundRobin, Head};
 
 mod keyed;
 mod refusal;
@@ -24,7 +25,7 @@ impl<const N: usize> TenantFair<N> {
     #[must_use]
     pub fn new(capacities: [NonZeroU32; N], quanta: [NonZeroU32; N]) -> Self {
         Self {
-            budgets: core::array::from_fn(|i| CreditWindow::new(capacities[i])),
+            budgets: capacities.map(CreditWindow::new),
             scheduler: DeficitRoundRobin::new(quanta),
         }
     }
@@ -60,29 +61,30 @@ impl<const N: usize> TenantFair<N> {
     /// that tenant as empty. Nothing changed: no credit was paid, no head
     /// charged, no budget touched.
     pub fn select(&mut self, heads: &[Option<NonZeroU32>; N]) -> Result<Option<usize>, Refusal> {
-        let admitted = |(budget, head): (&CreditWindow, &Option<NonZeroU32>)| {
-            head.is_none_or(|cost| cost.get() <= budget.in_flight())
-        };
-        if !self.budgets.iter().zip(heads).all(admitted) {
-            return Err(Refusal::ExceedsInFlight);
+        // Every head is settled up front: each tenant's budget as it would
+        // stand once its head is dispatched. A head that was never admitted
+        // refuses the whole call here, before the scheduler runs.
+        let mut settled = self.budgets.clone();
+        let mut presented = [None; N];
+        for ((budget, head), presented) in settled.iter_mut().zip(heads).zip(&mut presented) {
+            if let Some(cost) = *head {
+                budget.release(cost).map_err(Refusal::from_flow)?;
+                *presented = Some(Tail {
+                    cost,
+                    last: budget.in_flight() == 0,
+                });
+            }
         }
-        // The round is decided on a copy and committed last, so no path
-        // out of here leaves half a round behind.
-        let mut scheduler = self.scheduler.clone();
-        let Some(tenant) = scheduler.select(heads) else {
-            self.scheduler = scheduler;
+        // A head that drains its tenant deactivates it inside the selection,
+        // so nothing after the scheduler's answer can be refused.
+        let Some(tenant) = self.scheduler.select(&presented) else {
             return Ok(None);
         };
-        let Some(cost) = heads.get(tenant).copied().flatten() else {
-            debug_assert!(false, "DRR selects only a lane presented with a head");
-            return Err(Refusal::ExceedsInFlight);
-        };
-        let Ok(budget) = Self::returned(&self.budgets, &mut scheduler, tenant, cost) else {
-            debug_assert!(false, "every head was checked against its tenant's budget");
-            return Err(Refusal::ExceedsInFlight);
-        };
-        self.budgets[tenant] = budget;
-        self.scheduler = scheduler;
+        for (index, (budget, settled)) in self.budgets.iter_mut().zip(settled).enumerate() {
+            if index == tenant {
+                *budget = settled;
+            }
+        }
         Ok(Some(tenant))
     }
 
@@ -98,8 +100,19 @@ impl<const N: usize> TenantFair<N> {
     /// [`Refusal::ExceedsInFlight`] when `cost` exceeds what the tenant has
     /// admitted: there is no partial return. Nothing changed.
     pub fn cancel(&mut self, tenant: usize, cost: NonZeroU32) -> Result<(), Refusal> {
-        let budget = Self::returned(&self.budgets, &mut self.scheduler, tenant, cost)?;
-        self.budgets[tenant] = budget;
+        let budget = self.budgets.get_mut(tenant).ok_or(Refusal::UnknownTenant)?;
+        let mut returned = budget.clone();
+        returned.release(cost).map_err(Refusal::from_flow)?;
+        if returned.in_flight() == 0 {
+            // A drained tenant leaves the rotation. The scheduler has the
+            // same N lanes as the budgets, and its refusal for an unknown
+            // lane is this crate's `UnknownTenant`: carried, not asserted.
+            match self.scheduler.deactivate(tenant) {
+                Ok(Deactivation::Deactivated | Deactivation::Idle) => {}
+                Err(refusal) => return Err(Refusal::from_priority(refusal)),
+            }
+        }
+        *budget = returned;
         Ok(())
     }
 
@@ -121,28 +134,23 @@ impl<const N: usize> TenantFair<N> {
     pub fn available(&self, tenant: usize) -> Option<u32> {
         self.budgets.get(tenant).map(CreditWindow::available)
     }
+}
 
-    /// The tenant's budget with `cost` returned; a drained tenant leaves the
-    /// rotation of `scheduler`. The budget is answered, not stored: the
-    /// scheduler's answer comes last, so a refusal has changed nothing.
-    fn returned(
-        budgets: &[CreditWindow; N],
-        scheduler: &mut DeficitRoundRobin<N>,
-        tenant: usize,
-        cost: NonZeroU32,
-    ) -> Result<CreditWindow, Refusal> {
-        let mut budget = budgets.get(tenant).ok_or(Refusal::UnknownTenant)?.clone();
-        budget.release(cost).map_err(Refusal::from_flow)?;
-        if budget.in_flight() > 0 {
-            return Ok(budget);
-        }
-        match scheduler.deactivate(tenant) {
-            Ok(Deactivation::Deactivated | Deactivation::Idle) => Ok(budget),
-            Err(refusal) => {
-                debug_assert!(false, "the scheduler has the same N lanes as the budgets");
-                Err(Refusal::from_priority(refusal))
-            }
-        }
+/// A tenant's head as the scheduler reads it: its cost, and whether
+/// dispatching it drains the tenant's budget.
+#[derive(Debug, Clone, Copy)]
+struct Tail {
+    cost: NonZeroU32,
+    last: bool,
+}
+
+impl Head for Tail {
+    fn cost(self) -> NonZeroU32 {
+        self.cost
+    }
+
+    fn last(self) -> bool {
+        self.last
     }
 }
 

@@ -69,15 +69,13 @@ bounds are not implemented.
 - **No clock.** Nothing here takes time, so no answer records one.
 - **No panics.** The one `assert!` is evaluated at compile time:
   `KeyedFair<0>` does not build, so no runtime path can meet a lane-less
-  instance. Three arms the sibling types demand and the invariants rule out
-  are `debug_assert!(false, ..)` plus a refusal with nothing changed, and no
-  `Refusal` variant exists only to name them: in `select`, DRR selecting a
-  tenant presented without a head, and returning a head's cost that was
-  already checked against the tenant's budget (`ExceedsInFlight`); in
-  `select` and `cancel`, the scheduler refusing a tenant the budgets know (it
-  has the same `N` lanes; `UnknownTenant`). `select` decides on a copy of the
-  scheduler and `cancel` on a copy of the budget, and both commit last, so
-  even those arms leave the value unchanged.
+  instance. There is no `debug_assert!` arm: `select` settles every head
+  against its tenant's budget before the scheduler runs (an unadmitted head
+  refuses the whole call there), and presents each head to the DRR with
+  whether it drains its tenant, so the DRR deactivates a drained tenant
+  inside the selection and nothing after its answer can be refused. `cancel`
+  checks the tenant against the budgets; the scheduler's unknown-lane refusal
+  for the same index is carried as `UnknownTenant`, and both commit last.
 - **Sibling seams.** The `flow-machines` credit windows and the
   `priority-machines` DRR are private: no sibling type appears in this API,
   so none is re-exported. Their refusals are mapped onto `Refusal` variant by

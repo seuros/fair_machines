@@ -33,6 +33,7 @@ module FairMachines
   end
 
   # The core's `TenantFair<N>`; `N` is the length of the arrays.
+  # Sealed: subclassing raises TypeError, and there is no allocator.
   class TenantFair
     # The largest `N` compiled into this binding: `TenantFair<1>` to
     # `TenantFair<16>`. The core takes any `N`; it has no ceiling of its own.
@@ -70,6 +71,7 @@ module FairMachines
 
   # The core's `KeyedFair<LANES>`. `LANES` is a const generic in the core;
   # here it is the first argument wherever the core names the type.
+  # Sealed like TenantFair.
   class KeyedFair
     # The largest `LANES` compiled into this binding: `KeyedFair<1>` to
     # `KeyedFair<256>`. The core takes any `LANES > 0`; it has no ceiling of
@@ -111,4 +113,7 @@ module FairMachines
     # Cost the lane may still admit; nil for a lane this instance does not have.
     def available: (Lane lane) -> Integer?
   end
+
+  # Private native hook `Lane#initialize` validates its index through.
+  private def self.__lane: (Integer index) -> Integer
 end

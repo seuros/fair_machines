@@ -28,4 +28,10 @@ module FairMachines
   # not reflection, so the binding also checks every Lane it reads.
   Lane.singleton_class.undef_method(:allocate)
   Lane.define_singleton_method(:inherited) { |_| raise TypeError, "#{Lane} cannot be subclassed" }
+
+  # The schedulers wrap native state and have no allocator: a subclass's
+  # `new` would build the base class anyway, so subclassing raises too.
+  [TenantFair, KeyedFair].each do |scheduler|
+    scheduler.define_singleton_method(:inherited) { |_| raise TypeError, "#{scheduler} cannot be subclassed" }
+  end
 end
