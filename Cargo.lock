@@ -75,7 +75,7 @@ checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
 name = "fair-machines"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "flow-machines",
  "matryona-machines",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "fair_machines_native"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "fair-machines",
  "magnus",

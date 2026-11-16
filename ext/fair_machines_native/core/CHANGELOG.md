@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.0](https://github.com/seuros/fair_machines/compare/fair-machines-v0.6.0...fair-machines-v0.7.0) (2026-11-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* seal TenantFair and KeyedFair against subclassing
+
+### Features
+
+* seal TenantFair and KeyedFair against subclassing ([74f1b9c](https://github.com/seuros/fair_machines/commit/74f1b9c6f3d283689441bfa7a8e469da16695f4f))
+
 ## [0.6.0](https://github.com/seuros/fair_machines/compare/fair-machines-v0.5.0...fair-machines-v0.6.0) (2026-11-14)
 
 
